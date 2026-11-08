@@ -73,3 +73,6 @@ body.tablet button, body.tablet select { min-height: 40px; }
   padding: 8px; resize: vertical; user-select: text; -webkit-user-select: text; }
 #textStampDialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 #textStampDialog button { min-height: 40px; padding: 0 16px; }
+
+#textStampDialog .buttons .spacer { flex: 1; }
+#textStampDialog .dir { display: flex; align-items: center; gap: 6px; }

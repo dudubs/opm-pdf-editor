@@ -4,6 +4,10 @@
 //          fit-width, double-tap + hold the second tap opens the text-stamp dialog
 //   mouse  never draws; it only interacts with existing annotations
 //
+// Text stamps (Hebrew-safe: text is rendered to an image, the source text stays in /Contents) are also
+// reachable outside tablet mode: the "Text" button (or EmbedPDF's own Text tool) arms a one-shot
+// placement click, and double-clicking an existing text stamp edits it.
+//
 // EmbedPDF sets `touch-action: none` on its pages while the ink tool is active, so finger scrolling
 // is done here. Pointer events are filtered in the capture phase on the viewer's host element, before
 // they reach the plugin's listeners inside the shadow DOM.
@@ -46,7 +50,15 @@ export interface TabletController {
   attach(viewer: any): void;
 }
 
-export function initTablet({ target, button }: { target: HTMLElement; button: HTMLElement }): TabletController {
+export function initTablet({
+  target,
+  button,
+  textButton,
+}: {
+  target: HTMLElement;
+  button: HTMLElement;
+  textButton: HTMLElement;
+}): TabletController {
   let tablet = false;
   let viewer: any = null;
   let caps: Caps | null = null;
@@ -383,8 +395,35 @@ export function initTablet({ target, button }: { target: HTMLElement; button: HT
     }
   }
 
+  // One-shot text placement: the next press on a page opens the text dialog there. The press and
+  // everything that follows from the same pointer is kept away from EmbedPDF's active tool.
+  let textArmed = false;
+  let swallowId: number | null = null;
+  function setTextArmed(on: boolean) {
+    textArmed = on;
+    swallowId = null;
+    target.classList.toggle("text-armed", on);
+    textButton.classList.toggle("active", on);
+  }
+  textButton.addEventListener("click", () => setTextArmed(!textArmed));
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && textArmed) setTextArmed(false);
+  });
+
   function onPointer(e: PointerEvent) {
-    if (!tablet || !inContent(e)) return;
+    if (!inContent(e)) return;
+    if (textArmed && e.type === "pointerdown" && swallowId === null) swallowId = e.pointerId;
+    if (swallowId === e.pointerId) {
+      e.stopPropagation();
+      if (e.type === "pointerup") {
+        setTextArmed(false);
+        void openTextStamp(e.clientX, e.clientY);
+      } else if (e.type === "pointercancel") {
+        swallowId = null;
+      }
+      return;
+    }
+    if (!tablet) return;
     if (e.pointerType === "touch") {
       // Fingers don't draw. Gestures work with the ink tool or with no tool at all.
       const tool = activeToolId();
@@ -410,6 +449,15 @@ export function initTablet({ target, button }: { target: HTMLElement; button: HT
   for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
     target.addEventListener(type, (e) => onPointer(e as PointerEvent), { capture: true });
   }
+  // Double-click an existing text stamp to edit it (mouse; touch uses double-tap + hold).
+  target.addEventListener(
+    "dblclick",
+    (e) => {
+      if (!inContent(e)) return;
+      void openTextStamp(e.clientX, e.clientY, { onlyExisting: true });
+    },
+    { capture: true },
+  );
   target.addEventListener("contextmenu", (e) => {
     if (tablet) e.preventDefault();
   });
@@ -417,7 +465,7 @@ export function initTablet({ target, button }: { target: HTMLElement; button: HT
   // ---------- text stamps ----------
   // A real Stamp annotation whose /Contents holds the source text, so the same gesture on it
   // reopens the dialog prefilled and replaces it.
-  async function openTextStamp(clientX: number, clientY: number) {
+  async function openTextStamp(clientX: number, clientY: number, { onlyExisting = false } = {}) {
     const a = annScope();
     const p = pointToPage(clientX, clientY);
     if (!a || !p) return;
@@ -433,6 +481,7 @@ export function initTablet({ target, button }: { target: HTMLElement; button: HT
           p.y >= o.rect.origin.y &&
           p.y <= o.rect.origin.y + o.rect.size.height,
       );
+    if (onlyExisting && !existing) return;
     const initial: string = existing?.contents ?? "";
     const text = await promptText(initial);
     if (text === null || text === initial) return;
@@ -476,6 +525,17 @@ export function initTablet({ target, button }: { target: HTMLElement; button: HT
     // A finished stroke stays unselected, so the next pen stroke never grabs the previous one.
     const ink = c.ann.getTool?.("ink");
     if (ink?.behavior) ink.behavior.selectAfterCreate = false;
+    // EmbedPDF's own Text tool would create a FreeText annotation (no Hebrew shaping / RTL): turn it into
+    // our text-stamp placement instead.
+    c.ann.onActiveToolChange?.((e: any) => {
+      const tool = e && "tool" in e ? e.tool : e;
+      if (tool?.id !== "freeText") return;
+      queueMicrotask(() => {
+        c.ann.setActiveTool(null);
+        applyTool();
+        setTextArmed(true);
+      });
+    });
     c.im.registerMode({ id: ERASER_MODE, scope: "page", exclusive: true, cursor: "cell" });
     // EmbedPDF's pan plugin re-activates its default (pan) mode while a document opens, which would
     // drop our ink tool; re-assert it for a short settle window. Later changes are the user's.

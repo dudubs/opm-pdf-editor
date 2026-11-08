@@ -12,6 +12,11 @@
       #bar .spacer { flex: 1; }
       #viewer { flex: 1; min-height: 0; }
       #bar button { font: inherit; padding: 4px 10px; }
+      #bar button:disabled { opacity: 0.5; }
+      #bar button.primary { font-weight: 600; }
+      #bar #status { font-size: 12px; opacity: 0.8; }
+      #bar #status.error { color: #dc2626; opacity: 1; }
+      #viewer.text-armed { cursor: crosshair; }
       #bar button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
       /* Tablet mode: no browser pinch-zoom of the app chrome (the PDF pinch is EmbedPDF's own). */
       html.tablet, html.tablet body { touch-action: pan-x pan-y; }
@@ -24,7 +29,9 @@
       #textStampDialog h3 { margin: 0 0 8px; font-size: 14px; }
       #textStampDialog textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 18px;
         padding: 8px; resize: vertical; user-select: text; -webkit-user-select: text; }
-      #textStampDialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+      #textStampDialog .buttons { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+      #textStampDialog .buttons .spacer { flex: 1; }
+      #textStampDialog .dir { display: flex; align-items: center; gap: 6px; }
     </style>
   </head>
   <body>
@@ -32,8 +39,11 @@
       <strong>PDFium</strong>
       <select id="files"></select>
       <label>Open… <input id="upload" type="file" accept="application/pdf,.pdf" hidden /></label>
+      <button id="textTool" title="Add text: click where it should go. Hebrew / RTL safe. Double-click a text stamp to edit it.">Text</button>
       <button id="tabletToggle" title="Tablet mode: pen draws (barrel button erases), finger scrolls / pinch-zooms / double-tap toggles fit, double-tap + hold adds text, mouse never draws">Tablet</button>
       <span class="spacer"></span>
+      <span id="status"></span>
+      <button id="save" class="primary" disabled title="Save changes to the file on the server (Ctrl+S)">Save</button>
       <a href="/">pdf.js editor</a>
     </div>
     <div id="viewer"></div>
