@@ -1,7 +1,7 @@
 [package]
 name = "opm-pdf-editor"
 version = "0.1.0"
-description = "PDF editor (pdf.js fork) desktop shell"
+description = "PDF editor desktop app (PDFium / EmbedPDF)"
 edition = "2021"
 
 [build-dependencies]
@@ -13,3 +13,5 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 # Remembers dialog-granted file access across restarts (recent files keep working).
 tauri-plugin-persisted-scope = "2"
+# One window: a second launch (opening another PDF) is forwarded to the running app.
+tauri-plugin-single-instance = "2"

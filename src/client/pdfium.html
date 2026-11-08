@@ -3,12 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>PDF Editor (PDFium)</title>
+    <title>PDF Editor</title>
+    <link rel="icon" href="data:," />
     <style>
       html, body { margin: 0; height: 100%; overscroll-behavior: none; font: 14px system-ui, sans-serif; }
       body { display: flex; flex-direction: column; }
       #bar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid #8884; }
-      #bar select { max-width: 40vw; }
+      #bar select { max-width: 30vw; }
+      #bar [hidden] { display: none; }
+      #bar #fileName { font-weight: 600; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 6px; opacity: 0.7; text-align: center; padding: 16px; }
+      #empty strong { font-size: 18px; }
       #bar .spacer { flex: 1; }
       #viewer { flex: 1; min-height: 0; }
       #bar button { font: inherit; padding: 4px 10px; }
@@ -36,17 +42,19 @@
   </head>
   <body>
     <div id="bar">
-      <strong>PDFium</strong>
-      <select id="files"></select>
-      <label>Open… <input id="upload" type="file" accept="application/pdf,.pdf" hidden /></label>
+      <button id="open" title="Open a PDF (Ctrl+O). You can also drop a file on the window." hidden>Open…</button>
+      <select id="recents" title="Recent files" hidden></select>
+      <span id="fileName"></span>
       <button id="textTool" title="Add text: click where it should go. Hebrew / RTL safe. Double-click a text stamp to edit it.">Text</button>
       <button id="tabletToggle" title="Tablet mode: pen draws (barrel button erases), finger scrolls / pinch-zooms / double-tap toggles fit, double-tap + hold adds text, mouse never draws">Tablet</button>
       <span class="spacer"></span>
       <span id="status"></span>
-      <button id="save" class="primary" disabled title="Save changes to the file on the server (Ctrl+S)">Save</button>
-      <a href="/">pdf.js editor</a>
+      <button id="saveAs" title="Save a copy under a new name (Ctrl+Shift+S)" hidden disabled>Save As…</button>
+      <button id="save" class="primary" disabled title="Save changes to the file (Ctrl+S)">Save</button>
     </div>
-    <div id="viewer"></div>
+    <div id="viewer">
+      <div id="empty"><strong>No PDF open</strong><span>Open a file (Ctrl+O) or drop a .pdf on this window.</span></div>
+    </div>
     <script type="module" src="/assets/pdfium.js"></script>
   </body>
 </html>

@@ -6,6 +6,7 @@
   "scripts": {
     "build:pdfjs": "docker run --rm --user $(id -u):$(id -g) -e HOME=/tmp -v \"$PWD/vendor/pdfjs:/pdfjs\" -w /pdfjs node:24 sh -c \"npm ci --ignore-scripts --no-audit --no-fund && npx gulp dist\"",
     "build": "bun run scripts/build.ts",
+    "build:desktop": "bun run scripts/build.ts --desktop",
     "start": "bun run src/server.ts",
     "dev": "bun run scripts/dev.ts",
     "typecheck": "tsc --noEmit",
@@ -15,6 +16,9 @@
     "tauri:build:win:cross": "bash scripts/tauri-win-build.sh"
   },
   "dependencies": {
+    "@embedpdf/fonts-arabic": "^1.0.0",
+    "@embedpdf/fonts-hebrew": "^1.0.0",
+    "@embedpdf/fonts-latin": "^1.0.0",
     "@embedpdf/snippet": "^2.15.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
