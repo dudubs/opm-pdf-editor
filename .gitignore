@@ -2,3 +2,5 @@ node_modules
 dist
 data/*
 !data/.gitkeep
+vendor/pdfjs/node_modules
+vendor/pdfjs/build

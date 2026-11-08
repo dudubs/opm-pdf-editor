@@ -37,8 +37,12 @@
         <button data-mode="none" class="active" title="Select / view">Select</button>
         <button data-mode="freetext" title="Add text">Text</button>
         <button data-mode="ink" title="Draw">Draw</button>
+        <button data-mode="erase" title="Erase parts of drawn strokes">Erase</button>
         <button data-mode="highlight" title="Highlight text">Highlight</button>
       </div>
+      <label id="eraserSizeWrap" hidden title="Eraser size">
+        <input id="eraserSize" type="range" min="6" max="80" value="24" />
+      </label>
       <span class="spacer"></span>
       <span id="status"></span>
       <a id="download" class="btn" href="#" title="Download current file">Download</a>

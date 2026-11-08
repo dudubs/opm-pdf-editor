@@ -1,6 +1,15 @@
 # syntax=docker/dockerfile:1
+# Our fork of pdf.js (vendor/pdfjs) -> a pdfjs-dist compatible package.
+FROM node:24 AS pdfjs
+WORKDIR /pdfjs
+COPY vendor/pdfjs/package.json vendor/pdfjs/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY vendor/pdfjs ./
+RUN npx gulp dist
+
 FROM oven/bun:1 AS build
 WORKDIR /app
+COPY --from=pdfjs /pdfjs/build/dist ./vendor/pdfjs/build/dist
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY tsconfig.json ./

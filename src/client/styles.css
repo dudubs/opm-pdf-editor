@@ -46,3 +46,11 @@ button.primary:disabled { background: var(--panel); color: inherit; border-color
   pointer-events: none; }
 #empty.hidden { display: none; }
 #viewerContainer.dragover { outline: 3px dashed var(--accent); outline-offset: -8px; }
+
+#eraserSizeWrap { display: flex; align-items: center; }
+#eraserSizeWrap[hidden] { display: none; }
+#eraserSize { width: 90px; }
+#eraserRing { position: fixed; left: 0; top: 0; pointer-events: none; z-index: 1000;
+  box-sizing: border-box; border: 1.5px solid #111; border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9); }
+#eraserRing[hidden] { display: none; }

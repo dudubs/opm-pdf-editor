@@ -20,6 +20,8 @@ const els = {
   download: $<HTMLAnchorElement>("download"),
   status: $<HTMLSpanElement>("status"),
   tools: $<HTMLDivElement>("tools"),
+  eraserSizeWrap: $<HTMLLabelElement>("eraserSizeWrap"),
+  eraserSize: $<HTMLInputElement>("eraserSize"),
 };
 
 interface FileInfo { name: string; size: number; modified: string }
@@ -221,13 +223,57 @@ els.zoomSelect.addEventListener("change", () => {
   viewer.currentScaleValue = els.zoomSelect.value;
 });
 
+// ---------- eraser (needs our pdf.js fork: INK_ERASER params) ----------
+
+const eraserRing = document.createElement("div");
+eraserRing.id = "eraserRing";
+eraserRing.hidden = true;
+document.body.append(eraserRing);
+
+let eraserActive = false;
+
+function setEraserParam(type: number, value: number | boolean) {
+  eventBus.dispatch("switchannotationeditorparams", { source: viewer, type, value });
+}
+
+function setEraser(active: boolean) {
+  eraserActive = active;
+  setEraserParam(pdfjs.AnnotationEditorParamsType.INK_ERASER, active);
+  setEraserParam(pdfjs.AnnotationEditorParamsType.INK_ERASER_SIZE, Number(els.eraserSize.value));
+  els.eraserSizeWrap.hidden = !active;
+  if (!active) eraserRing.hidden = true;
+}
+
+function updateEraserRing(e: PointerEvent) {
+  const overPage = !!(e.target as HTMLElement).closest?.(".annotationEditorLayer");
+  eraserRing.hidden = !(eraserActive && overPage);
+  eraserRing.style.transform = `translate(${e.clientX}px, ${e.clientY}px) translate(-50%, -50%)`;
+}
+els.container.addEventListener("pointermove", updateEraserRing);
+els.container.addEventListener("pointerleave", () => (eraserRing.hidden = true));
+
+els.eraserSize.addEventListener("input", () => {
+  const size = Number(els.eraserSize.value);
+  eraserRing.style.width = eraserRing.style.height = `${size}px`;
+  setEraserParam(pdfjs.AnnotationEditorParamsType.INK_ERASER_SIZE, size);
+});
+eraserRing.style.width = eraserRing.style.height = `${els.eraserSize.value}px`;
+
 els.tools.addEventListener("click", (e) => {
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-mode]");
   if (!btn) return;
-  const mode = EDITOR_MODES[btn.dataset.mode!];
+  const name = btn.dataset.mode!;
+  const erase = name === "erase";
+  const mode = EDITOR_MODES[erase ? "ink" : name];
   if (mode === undefined) return;
+  setEraser(erase);
   viewer.annotationEditorMode = { mode };
   for (const b of els.tools.querySelectorAll("button")) b.classList.toggle("active", b === btn);
+});
+
+// Erasing is undoable like any other edit: it makes the document dirty.
+eventBus.on("annotationeditorstateschanged", (e: { details: { hasSomethingToUndo?: boolean } }) => {
+  if (e.details?.hasSomethingToUndo) setDirty(true);
 });
 
 eventBus.on("pagechanging", (e: { pageNumber: number }) => {

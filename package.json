@@ -4,13 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:pdfjs": "docker run --rm --user $(id -u):$(id -g) -e HOME=/tmp -v \"$PWD/vendor/pdfjs:/pdfjs\" -w /pdfjs node:24 sh -c \"npm ci --ignore-scripts --no-audit --no-fund && npx gulp dist\"",
     "build": "bun run scripts/build.ts",
     "start": "bun run src/server.ts",
     "dev": "bun run build && bun --watch run src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "pdfjs-dist": "^5.4.0"
+    "pdfjs-dist": "file:vendor/pdfjs/build/dist"
   },
   "devDependencies": {
     "@types/bun": "latest",

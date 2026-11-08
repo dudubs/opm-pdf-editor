@@ -4,3 +4,6 @@ data
 .git
 Dockerfile
 docker-compose.yml
+vendor/pdfjs/node_modules
+vendor/pdfjs/build
+vendor/pdfjs/.git
