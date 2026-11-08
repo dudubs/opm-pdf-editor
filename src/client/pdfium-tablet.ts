@@ -259,11 +259,33 @@ export function initTablet({ target, button }: { target: HTMLElement; button: HT
     holdTimer = null;
   };
 
-  function toggleFit() {
+  /**
+   * Toggles fit-page / fit-width and scrolls to the page that was double-tapped, so fit-page shows that
+   * whole page top-to-bottom and fit-width shows it left-to-right (starting at its top edge).
+   */
+  function toggleFit(clientX: number, clientY: number) {
     const id = docId();
     if (!caps || !id) return;
+    const pageIndex = pointToPage(clientX, clientY)?.pageIndex ?? caps.scroll.forDocument(id).getCurrentPage?.() - 1;
     const z = caps.zoom.forDocument(id);
+    const sc = caps.scroll.forDocument(id);
+    const toPage = () => {
+      if (typeof pageIndex === "number" && pageIndex >= 0) {
+        sc.scrollToPage({ pageNumber: pageIndex + 1, behavior: "instant", alignX: 0, alignY: 0 });
+      }
+    };
+    // The zoom changes the layout asynchronously: scroll once it has settled (and again if it moves).
+    let settle: ReturnType<typeof setTimeout> | null = null;
+    const off = sc.onLayoutChange?.(() => {
+      if (settle) clearTimeout(settle);
+      settle = setTimeout(toPage, 60);
+    });
     z.requestZoom(z.getState().zoomLevel === "fit-page" ? "fit-width" : "fit-page");
+    setTimeout(() => {
+      if (typeof off === "function") off();
+      if (settle) clearTimeout(settle);
+      toPage();
+    }, 600);
   }
 
   /** Touch pointers: never draw, scroll with one finger, detect tap gestures. */
@@ -354,7 +376,7 @@ export function initTablet({ target, button }: { target: HTMLElement; button: HT
         lastTap = null;
       } else if (down.double) {
         lastTap = null;
-        toggleFit();
+        toggleFit(e.clientX, e.clientY);
       } else {
         lastTap = { upT: e.timeStamp, x: e.clientX, y: e.clientY };
       }
