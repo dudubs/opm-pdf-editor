@@ -15,10 +15,11 @@
     "tauri:build:win:cross": "bash scripts/tauri-win-build.sh"
   },
   "dependencies": {
-    "pdfjs-dist": "file:vendor/pdfjs/build/dist",
+    "@embedpdf/snippet": "^2.15.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
-    "@tauri-apps/plugin-fs": "^2"
+    "@tauri-apps/plugin-fs": "^2",
+    "pdfjs-dist": "file:vendor/pdfjs/build/dist"
   },
   "devDependencies": {
     "@types/bun": "latest",

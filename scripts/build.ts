@@ -13,7 +13,8 @@ await mkdir(join(out, "assets"), { recursive: true });
 
 // 1. Bundle the TypeScript browser client.
 const result = await Bun.build({
-  entrypoints: [join(root, "src", "client", "main.ts")],
+  entrypoints: [join(root, "src", "client", "main.ts"), join(root, "src", "client", "pdfium.ts")],
+  external: ["/embedpdf/embedpdf.js"],
   outdir: join(out, "assets"),
   target: "browser",
   format: "esm",
@@ -28,6 +29,7 @@ if (!result.success) {
 
 // 2. Static HTML/CSS.
 await cp(join(root, "src", "client", "index.html"), join(out, "index.html"));
+await cp(join(root, "src", "client", "pdfium.html"), join(out, "pdfium.html"));
 await cp(join(root, "src", "client", "styles.css"), join(out, "assets", "styles.css"));
 
 if (clientOnly) {
@@ -48,5 +50,11 @@ const copies: [string, string][] = [
 for (const [from, to] of copies) {
   await cp(join(pdfjs, from), join(out, to), { recursive: true });
 }
+
+// 4. EmbedPDF (PDFium WASM) snippet viewer for /pdfium.html — skip its demo PDFs and sample page.
+await cp(join(root, "node_modules", "@embedpdf", "snippet", "dist"), join(out, "embedpdf"), {
+  recursive: true,
+  filter: (src) => !/\.(pdf|html)$/.test(src) && !src.endsWith(".map"),
+});
 
 console.log("Build complete ->", out);

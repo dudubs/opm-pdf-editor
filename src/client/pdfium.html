@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Editor (PDFium)</title>
+    <style>
+      html, body { margin: 0; height: 100%; overscroll-behavior: none; font: 14px system-ui, sans-serif; }
+      body { display: flex; flex-direction: column; }
+      #bar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid #8884; }
+      #bar select { max-width: 40vw; }
+      #bar .spacer { flex: 1; }
+      #viewer { flex: 1; min-height: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <strong>PDFium</strong>
+      <select id="files"></select>
+      <label>Open… <input id="upload" type="file" accept="application/pdf,.pdf" hidden /></label>
+      <span class="spacer"></span>
+      <a href="/">pdf.js editor</a>
+    </div>
+    <div id="viewer"></div>
+    <script type="module" src="/assets/pdfium.js"></script>
+  </body>
+</html>
