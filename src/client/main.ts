@@ -3,6 +3,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { EventBus, LinkTarget, PDFLinkService, PDFViewer } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
 import { initDebug } from "./debug.ts";
 import { storage, type FileEntry } from "./storage.ts";
+import { promptText, renderTextToFile } from "./textStamp.ts";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.mjs";
 
@@ -317,6 +318,7 @@ function selectTool(name: string) {
   const erase = name === "erase";
   const mode = EDITOR_MODES[erase ? "ink" : name];
   if (mode === undefined) return;
+  debug?.log("selectTool", { from: currentTool, to: name, stack: new Error().stack?.split("\n").slice(2, 5).join(" | ") });
   currentTool = name;
   setEraser(erase);
   viewer.annotationEditorMode = { mode };
@@ -428,6 +430,16 @@ let touchDown: { t: number; x: number; y: number; double: boolean } | null = nul
 let activeTouches = 0;
 let multiTouch = false;
 
+// Double-tap whose second tap is held opens the text-stamp dialog.
+const DOUBLE_TAP_HOLD_MS = 500;
+let holdTimer: ReturnType<typeof setTimeout> | null = null;
+let holdFired = false;
+
+function cancelHold() {
+  if (holdTimer) clearTimeout(holdTimer);
+  holdTimer = null;
+}
+
 els.container.addEventListener(
   "pointerdown",
   (e) => {
@@ -436,14 +448,46 @@ els.container.addEventListener(
     if (e.isPrimary) {
       activeTouches = 0;
       multiTouch = false;
+      holdFired = false;
     }
     activeTouches++;
-    if (activeTouches > 1) multiTouch = true;
+    if (activeTouches > 1) {
+      multiTouch = true;
+      cancelHold(); // a second finger means pinch, not the text-stamp gesture
+    }
     const double = !!lastTap
       && e.timeStamp - lastTap.upT < DOUBLE_TAP_MAX_GAP_MS
       && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < DOUBLE_TAP_MAX_DIST;
     touchDown = { t: e.timeStamp, x: e.clientX, y: e.clientY, double };
     if (tabletMode && double) e.preventDefault();
+    cancelHold();
+    debug?.log("touchDownState", {
+      double,
+      activeTouches,
+      lastTapGap: lastTap ? Math.round(e.timeStamp - lastTap.upT) : null,
+      willArmHold: tabletMode && double && activeTouches === 1 && !!currentDoc,
+    });
+    if (tabletMode && double && activeTouches === 1 && currentDoc) {
+      const { clientX: x, clientY: y } = e;
+      holdTimer = setTimeout(() => {
+        holdTimer = null;
+        holdFired = true;
+        lastTap = null;
+        debug?.log("textStampHold", { x, y });
+        void openTextStamp(x, y);
+      }, DOUBLE_TAP_HOLD_MS);
+    }
+  },
+  { capture: true },
+);
+els.container.addEventListener(
+  "pointermove",
+  (e) => {
+    if (e.pointerType !== "touch" || !holdTimer || !touchDown) return;
+    if (Math.hypot(e.clientX - touchDown.x, e.clientY - touchDown.y) > TAP_MAX_MOVE) {
+      debug?.log("holdCancelled", { reason: "move" });
+      cancelHold();
+    }
   },
   { capture: true },
 );
@@ -453,8 +497,18 @@ for (const type of ["pointerup", "pointercancel"]) {
     (e) => {
       const ev = e as PointerEvent;
       if (ev.pointerType !== "touch") return;
+      if (holdTimer) debug?.log("holdCancelled", { reason: type });
+      cancelHold();
       activeTouches = Math.max(0, activeTouches - 1);
       if (activeTouches > 0) return;
+      if (holdFired) {
+        // The long second tap opened the text dialog: not a double-tap, don't toggle fit.
+        holdFired = false;
+        touchDown = null;
+        multiTouch = false;
+        lastTap = null;
+        return;
+      }
       const down = touchDown;
       const wasMulti = multiTouch;
       touchDown = null;
@@ -481,11 +535,119 @@ function toggleFit() {
   viewer.currentScaleValue = els.zoomSelect.value;
 }
 
+eventBus.on("annotationeditormodechanged", (e: { mode: number }) => debug?.log("editorModeChanged", { mode: e.mode }));
+
+// ---------- text stamps ----------
+// Gesture: double-tap, holding the second tap. Opens a DOM text dialog; Apply renders the text to a
+// PNG and adds it as a real Stamp annotation carrying the source text (/OPMText in the PDF), so the
+// same gesture on that stamp reopens the dialog prefilled and replaces it.
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type EditorLike = {
+  div: HTMLElement;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pageDimensions: [number, number];
+  remove(): void;
+};
+type LayerLike = {
+  div: HTMLElement;
+  createAndAddNewEditor(
+    event: { offsetX: number; offsetY: number },
+    isCentered: boolean,
+    data: Record<string, unknown>,
+  ): EditorLike | null;
+};
+type UIManagerLike = {
+  getLayer(pageIndex: number): LayerLike | undefined;
+  getEditors(pageIndex: number): Iterable<EditorLike>;
+};
+
+const editorUIManager = (): UIManagerLike | null =>
+  (viewer as any)._layerProperties?.annotationEditorUIManager ?? null;
+
+function waitForEditorMode(mode: number, timeoutMs = 4000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const bus = eventBus as any;
+    const timer = setTimeout(() => {
+      bus.off("annotationeditormodechanged", onMode);
+      reject(new Error("editor mode switch timed out"));
+    }, timeoutMs);
+    function onMode(e: { mode: number }) {
+      if (e.mode !== mode) return;
+      clearTimeout(timer);
+      bus.off("annotationeditormodechanged", onMode);
+      resolve();
+    }
+    bus.on("annotationeditormodechanged", onMode);
+  });
+}
+
+async function openTextStamp(clientX: number, clientY: number) {
+  const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+  const pageEl = target?.closest<HTMLElement>(".page");
+  const uiManager = editorUIManager();
+  if (!pageEl || !uiManager) return;
+  const pageIndex = Number(pageEl.dataset.pageNumber) - 1;
+
+  // Existing text stamp under the finger -> edit it.
+  const stampEl = target!.closest<HTMLElement>(".stampEditor[data-opm-text]");
+  const old = stampEl ? ([...uiManager.getEditors(pageIndex)].find((ed) => ed.div === stampEl) ?? null) : null;
+  const initial = old ? stampEl!.dataset.opmText ?? "" : "";
+
+  const text = await promptText(initial);
+  debug?.log("textStampDialog", { editing: !!old, applied: text !== null });
+  if (text === null || text === initial) return;
+
+  try {
+    const layer = uiManager.getLayer(pageIndex);
+    if (!layer) throw new Error("annotation layer not ready");
+    // Where to put the centre of the new stamp (client coords): the old stamp's centre, or the finger.
+    const rect = layer.div.getBoundingClientRect();
+    let cx = clientX - rect.left;
+    let cy = clientY - rect.top;
+    if (old) {
+      cx = (old.x + old.width / 2) * rect.width;
+      cy = (old.y + old.height / 2) * rect.height;
+    }
+    const image = await renderTextToFile(text);
+
+    old?.remove();
+    const stampMode = pdfjs.AnnotationEditorType.STAMP;
+    const switched = waitForEditorMode(stampMode);
+    viewer.annotationEditorMode = { mode: stampMode };
+    await switched;
+
+    const editor = layer.createAndAddNewEditor({ offsetX: cx, offsetY: cy }, true, {
+      bitmapFile: image.file,
+      opmText: text,
+    });
+    if (!editor) throw new Error("could not create stamp editor");
+    // Size in page units; set before the bitmap finishes loading so the stamp uses it.
+    const [pageW, pageH] = editor.pageDimensions;
+    editor.width = image.width / pageW;
+    editor.height = image.height / pageH;
+    // The stamp div stays hidden until its bitmap is drawn; don't leave STAMP mode before that.
+    for (let i = 0; i < 120 && editor.div.hidden; i++) await new Promise(requestAnimationFrame);
+  } catch (err) {
+    setStatus(`Text stamp failed: ${(err as Error).message}`, true);
+    debug?.log("textStampError", { message: String(err) });
+  } finally {
+    // Always return to the tool the user was on (ink in tablet mode), whatever happened above.
+    const tool = tabletMode && currentTool === "none" ? "ink" : currentTool;
+    viewer.annotationEditorMode = { mode: EDITOR_MODES[tool === "erase" ? "ink" : tool]! };
+    selectTool(tool);
+  }
+}
+
 $("tabletToggle").addEventListener("click", () => setTabletMode(!tabletMode));
 setTabletMode(loadTabletMode(), { persist: false });
 
 // ?debug=1 streams input events + state to the server log (see debug.ts).
 const debug = initDebug(() => ({
+  build: "text-stamp-2",
   tabletMode,
   currentTool,
   hasDocument: !!currentDoc,

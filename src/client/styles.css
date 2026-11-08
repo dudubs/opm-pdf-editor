@@ -63,3 +63,13 @@ body.tablet button, body.tablet select { min-height: 40px; }
   box-sizing: border-box; border: 1.5px solid #111; border-radius: 50%;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9); }
 #eraserRing[hidden] { display: none; }
+
+/* Text stamp dialog (tablet gesture: double-tap, hold the second tap). */
+#textStampDialog { border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+  width: min(480px, calc(100vw - 32px)); background: var(--panel); color: var(--text); }
+#textStampDialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+#textStampDialog h3 { margin: 0 0 8px; font-size: 14px; }
+#textStampDialog textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 18px;
+  padding: 8px; resize: vertical; user-select: text; -webkit-user-select: text; }
+#textStampDialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+#textStampDialog button { min-height: 40px; padding: 0 16px; }
