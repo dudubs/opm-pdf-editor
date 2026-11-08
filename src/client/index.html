@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PDF Editor</title>
+    <link rel="stylesheet" href="/pdfjs/pdf_viewer.css" />
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header id="toolbar">
+      <button id="toggleSidebar" title="Toggle file list">☰</button>
+      <label class="btn" title="Upload a PDF from your computer">
+        Open PDF…
+        <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden />
+      </label>
+      <span class="sep"></span>
+      <button id="prevPage" title="Previous page">‹</button>
+      <input id="pageNumber" type="number" min="1" value="1" />
+      <span id="pageCount">/ –</span>
+      <button id="nextPage" title="Next page">›</button>
+      <span class="sep"></span>
+      <button id="zoomOut" title="Zoom out">−</button>
+      <select id="zoomSelect">
+        <option value="page-width">Fit width</option>
+        <option value="page-fit">Fit page</option>
+        <option value="0.5">50%</option>
+        <option value="0.75">75%</option>
+        <option value="1">100%</option>
+        <option value="1.25">125%</option>
+        <option value="1.5">150%</option>
+        <option value="2">200%</option>
+      </select>
+      <button id="zoomIn" title="Zoom in">+</button>
+      <span class="sep"></span>
+      <div id="tools" role="group" aria-label="Edit tools">
+        <button data-mode="none" class="active" title="Select / view">Select</button>
+        <button data-mode="freetext" title="Add text">Text</button>
+        <button data-mode="ink" title="Draw">Draw</button>
+        <button data-mode="highlight" title="Highlight text">Highlight</button>
+      </div>
+      <span class="spacer"></span>
+      <span id="status"></span>
+      <a id="download" class="btn" href="#" title="Download current file">Download</a>
+      <button id="save" class="primary" disabled title="Save changes to the server">Save</button>
+    </header>
+    <div id="main">
+      <aside id="sidebar">
+        <h2>Files</h2>
+        <ul id="fileList"></ul>
+      </aside>
+      <div id="viewerWrap">
+        <div id="viewerContainer">
+          <div id="viewer" class="pdfViewer"></div>
+        </div>
+        <div id="empty">Open a PDF or pick one from the list.</div>
+      </div>
+    </div>
+    <script type="module" src="/assets/main.js"></script>
+  </body>
+</html>
