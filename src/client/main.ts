@@ -1,6 +1,7 @@
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { EventBus, LinkTarget, PDFLinkService, PDFViewer } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
+import { initDebug } from "./debug.ts";
 import { storage, type FileEntry } from "./storage.ts";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.mjs";
@@ -165,6 +166,7 @@ async function openFile(id: string, { push = true, force = false } = {}) {
     eventBus.on("pagesinit", () => {
       viewer.currentScaleValue = els.zoomSelect.value;
       viewer.currentPageNumber = Math.min(page, doc.numPages);
+      if (tabletMode) selectTool(currentTool === "none" ? "ink" : currentTool);
     }, { once: true });
     setStatus("");
     await refreshFileList();
@@ -308,17 +310,198 @@ els.eraserSize.addEventListener("input", () => {
 });
 eraserRing.style.width = eraserRing.style.height = `${els.eraserSize.value}px`;
 
-els.tools.addEventListener("click", (e) => {
-  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-mode]");
-  if (!btn) return;
-  const name = btn.dataset.mode!;
+/** Name of the selected toolbar tool (a `data-mode` value). */
+let currentTool = "none";
+
+function selectTool(name: string) {
   const erase = name === "erase";
   const mode = EDITOR_MODES[erase ? "ink" : name];
   if (mode === undefined) return;
+  currentTool = name;
   setEraser(erase);
   viewer.annotationEditorMode = { mode };
-  for (const b of els.tools.querySelectorAll("button")) b.classList.toggle("active", b === btn);
+  for (const b of els.tools.querySelectorAll<HTMLButtonElement>("button")) {
+    b.classList.toggle("active", b.dataset.mode === name);
+  }
+}
+
+els.tools.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-mode]");
+  if (btn) selectTool(btn.dataset.mode!);
 });
+
+// ---------- tablet mode ----------
+// pen: draws ink (barrel button / eraser end erases) · finger: scroll, pinch-zoom,
+// double-tap toggles fit-page / fit-width · mouse: selects existing annotations.
+// The editor stays in ink mode; pointer events are filtered before the pdf.js layer sees them,
+// because switching editor modes is async and heavy.
+
+const TABLET_KEY = "tabletMode";
+const BARREL_BUTTONS = 2 | 32; // barrel button, pen eraser end
+
+function loadTabletMode(): boolean {
+  try {
+    const saved = localStorage.getItem(TABLET_KEY);
+    if (saved !== null) return saved === "1";
+  } catch {}
+  return matchMedia("(pointer: coarse)").matches;
+}
+
+let tabletMode = false;
+
+/** Tablet routing only applies while the ink/eraser tool is active. */
+const tabletInkActive = () => tabletMode && (currentTool === "ink" || currentTool === "erase");
+
+function setTabletMode(on: boolean, { persist = true } = {}) {
+  tabletMode = on;
+  document.documentElement.classList.toggle("tablet", on);
+  document.body.classList.toggle("tablet", on);
+  $("tabletToggle").classList.toggle("active", on);
+  if (persist) {
+    try {
+      localStorage.setItem(TABLET_KEY, on ? "1" : "0");
+    } catch {}
+  }
+  if (!currentDoc) return;
+  selectTool(on ? "ink" : "none");
+}
+
+/** The pen temporarily erases while its barrel button is held. */
+let penErasing = false;
+
+function endPenErase() {
+  if (!penErasing) return;
+  penErasing = false;
+  setEraser(currentTool === "erase");
+}
+
+els.container.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (!tabletInkActive()) return;
+    if (e.pointerType === "touch") {
+      // Fingers never draw or select: the browser scrolls, TouchManager pinches.
+      e.stopPropagation();
+    } else if (e.pointerType === "mouse") {
+      // Mouse selects: block strokes on empty page area, but let clicks reach existing editors.
+      if ((e.target as HTMLElement).classList.contains("annotationEditorLayer")) e.stopPropagation();
+    } else if (e.pointerType === "pen") {
+      const erase = (e.buttons & BARREL_BUTTONS) !== 0;
+      if (erase && !eraserActive) {
+        penErasing = true;
+        setEraser(true);
+      } else if (!erase && penErasing) {
+        endPenErase();
+      }
+    }
+  },
+  { capture: true },
+);
+for (const type of ["pointerup", "pointercancel"]) {
+  window.addEventListener(type, (e) => {
+    if ((e as PointerEvent).pointerType === "pen") endPenErase();
+  });
+}
+els.container.addEventListener("contextmenu", (e) => {
+  if (tabletMode) e.preventDefault();
+});
+
+// Pinch zoom with two fingers (same TouchManager the stock pdf.js viewer uses).
+// The generated typings declare the callbacks as `null`, hence the cast.
+const touchManagerOptions = {
+  container: els.container,
+  isPinchingDisabled: () => !tabletMode,
+  onPinching: (origin: number[], prevDistance: number, distance: number) => {
+    viewer.updateScale({ scaleFactor: distance / prevDistance, origin });
+  },
+  signal: new AbortController().signal,
+};
+new pdfjs.TouchManager(touchManagerOptions as unknown as ConstructorParameters<typeof pdfjs.TouchManager>[0]);
+
+// Double-tap with a finger toggles fit-page / fit-width.
+const TAP_MAX_MS = 350; // finger down -> up
+const TAP_MAX_MOVE = 20; // px
+const DOUBLE_TAP_MAX_GAP_MS = 500; // first tap up -> second tap down
+const DOUBLE_TAP_MAX_DIST = 60; // px
+let lastTap: { upT: number; x: number; y: number } | null = null;
+let touchDown: { t: number; x: number; y: number; double: boolean } | null = null;
+let activeTouches = 0;
+let multiTouch = false;
+
+els.container.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (e.pointerType !== "touch") return;
+    // The first finger of a gesture is primary: resync in case an up/cancel was missed.
+    if (e.isPrimary) {
+      activeTouches = 0;
+      multiTouch = false;
+    }
+    activeTouches++;
+    if (activeTouches > 1) multiTouch = true;
+    const double = !!lastTap
+      && e.timeStamp - lastTap.upT < DOUBLE_TAP_MAX_GAP_MS
+      && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < DOUBLE_TAP_MAX_DIST;
+    touchDown = { t: e.timeStamp, x: e.clientX, y: e.clientY, double };
+    if (tabletMode && double) e.preventDefault();
+  },
+  { capture: true },
+);
+for (const type of ["pointerup", "pointercancel"]) {
+  els.container.addEventListener(
+    type,
+    (e) => {
+      const ev = e as PointerEvent;
+      if (ev.pointerType !== "touch") return;
+      activeTouches = Math.max(0, activeTouches - 1);
+      if (activeTouches > 0) return;
+      const down = touchDown;
+      const wasMulti = multiTouch;
+      touchDown = null;
+      multiTouch = false;
+      if (!tabletMode || type !== "pointerup" || wasMulti || !down) return lastTap = null;
+      const isTap = ev.timeStamp - down.t < TAP_MAX_MS
+        && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < TAP_MAX_MOVE;
+      if (!isTap) return lastTap = null;
+      if (down.double) {
+        lastTap = null;
+        toggleFit();
+      } else {
+        lastTap = { upT: ev.timeStamp, x: ev.clientX, y: ev.clientY };
+      }
+    },
+    { capture: true },
+  );
+}
+
+function toggleFit() {
+  debug?.log("toggleFit", { from: viewer.currentScaleValue, hasDocument: !!currentDoc });
+  if (!currentDoc) return;
+  els.zoomSelect.value = viewer.currentScaleValue === "page-fit" ? "page-width" : "page-fit";
+  viewer.currentScaleValue = els.zoomSelect.value;
+}
+
+$("tabletToggle").addEventListener("click", () => setTabletMode(!tabletMode));
+setTabletMode(loadTabletMode(), { persist: false });
+
+// ?debug=1 streams input events + state to the server log (see debug.ts).
+const debug = initDebug(() => ({
+  tabletMode,
+  currentTool,
+  hasDocument: !!currentDoc,
+  scaleValue: viewer.currentScaleValue,
+  scale: viewer.currentScale,
+  eraserActive,
+  penErasing,
+  storedTabletMode: (() => {
+    try {
+      return localStorage.getItem(TABLET_KEY);
+    } catch {
+      return "unavailable";
+    }
+  })(),
+}));
+eventBus.on("scalechanging", (e: { scale: number }) => debug?.log("scalechanging", { scale: e.scale }));
 
 eventBus.on("pagechanging", (e: { pageNumber: number }) => {
   els.pageNumber.value = String(e.pageNumber);

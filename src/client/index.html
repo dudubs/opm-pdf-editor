@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
     <title>PDF Editor</title>
     <link rel="stylesheet" href="/pdfjs/pdf_viewer.css" />
     <link rel="stylesheet" href="/assets/styles.css" />
@@ -40,6 +40,7 @@
         <button data-mode="erase" title="Erase parts of drawn strokes">Erase</button>
         <button data-mode="highlight" title="Highlight text">Highlight</button>
       </div>
+      <button id="tabletToggle" title="Tablet mode: pen draws (barrel button erases), finger scrolls / pinch-zooms / double-tap toggles fit, mouse selects">Tablet</button>
       <label id="eraserSizeWrap" hidden title="Eraser size">
         <input id="eraserSize" type="range" min="6" max="80" value="24" />
       </label>

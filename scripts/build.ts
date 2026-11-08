@@ -5,7 +5,10 @@ const root = join(import.meta.dir, "..");
 const out = join(root, "dist", "public");
 const pdfjs = join(root, "node_modules", "pdfjs-dist");
 
-await rm(join(root, "dist"), { recursive: true, force: true });
+// `--client`: dev rebuild of only the app code (no wipe, no pdf.js asset copy, no minify).
+const clientOnly = process.argv.includes("--client");
+
+if (!clientOnly) await rm(join(root, "dist"), { recursive: true, force: true });
 await mkdir(join(out, "assets"), { recursive: true });
 
 // 1. Bundle the TypeScript browser client.
@@ -14,17 +17,23 @@ const result = await Bun.build({
   outdir: join(out, "assets"),
   target: "browser",
   format: "esm",
-  minify: true,
+  minify: !clientOnly,
   sourcemap: "linked",
 });
 if (!result.success) {
   for (const log of result.logs) console.error(log);
-  process.exit(1);
+  if (!clientOnly) process.exit(1);
+  throw new Error("client build failed");
 }
 
 // 2. Static HTML/CSS.
 await cp(join(root, "src", "client", "index.html"), join(out, "index.html"));
 await cp(join(root, "src", "client", "styles.css"), join(out, "assets", "styles.css"));
+
+if (clientOnly) {
+  console.log("Client rebuilt");
+  process.exit(0);
+}
 
 // 3. pdf.js runtime assets (worker, fonts, cmaps, wasm decoders, viewer css/images).
 const copies: [string, string][] = [

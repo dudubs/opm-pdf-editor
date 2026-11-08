@@ -48,6 +48,14 @@ button.primary:disabled { background: var(--panel); color: inherit; border-color
 #empty.hidden { display: none; }
 #viewerContainer.dragover { outline: 3px dashed var(--accent); outline-offset: -8px; }
 
+/* Tablet mode: native one-finger pan only; pinch and double-tap are handled in main.ts.
+   Set on html/body too: browser pinch-zoom must be off for the whole page (toolbar included),
+   otherwise a pinch zooms the app chrome instead of the PDF. */
+html.tablet, body.tablet, body.tablet #viewerContainer { touch-action: pan-x pan-y; }
+body.tablet #viewerContainer { overscroll-behavior: contain;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+body.tablet button, body.tablet select { min-height: 40px; }
+
 #eraserSizeWrap { display: flex; align-items: center; }
 #eraserSizeWrap[hidden] { display: none; }
 #eraserSize { width: 90px; }

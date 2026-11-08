@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, extname, join, normalize, resolve, sep } from "node:path";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -66,8 +66,23 @@ async function listFiles() {
   return files.sort((a, b) => b.modified.localeCompare(a.modified));
 }
 
+/** Client input-debug events (see src/client/debug.ts); appended to a size-capped local log. */
+const DEBUG_LOG = resolve(process.env.DEBUG_LOG ?? join(DATA_DIR, "debug-events.log"));
+const DEBUG_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+async function handleDebugLog(req: Request): Promise<Response> {
+  if (req.method !== "POST") return error(405, "Method not allowed");
+  const text = await req.text();
+  if (text.length > 256 * 1024) return error(413, "Too large");
+  const size = await stat(DEBUG_LOG).then((s) => s.size, () => 0);
+  if (size > DEBUG_LOG_MAX_BYTES) await rm(DEBUG_LOG, { force: true });
+  await appendFile(DEBUG_LOG, text + "\n");
+  return json({ ok: true });
+}
+
 async function handleApi(req: Request, url: URL): Promise<Response> {
   const parts = url.pathname.split("/").filter(Boolean); // ["api", "files", name?]
+  if (parts[1] === "debug-log") return handleDebugLog(req);
   if (parts[1] !== "files") return error(404, "Not found");
   const rawName = parts[2];
 
@@ -133,10 +148,12 @@ async function serveStatic(pathname: string): Promise<Response> {
   if (full !== PUBLIC_DIR && !full.startsWith(PUBLIC_DIR + sep)) return error(403, "Forbidden");
   const file = Bun.file(full);
   if (!(await file.exists())) return error(404, "Not found");
-  return new Response(file);
+  // Revalidate on every load so a rebuilt main.js is never served stale from the browser cache.
+  return new Response(file, { headers: { "Cache-Control": "no-cache" } });
 }
 
 const server = Bun.serve({
+  hostname: process.env.HOST ?? "0.0.0.0",
   port: PORT,
   maxRequestBodySize: MAX_UPLOAD_BYTES,
   async fetch(req) {
@@ -153,4 +170,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`PDF editor listening on http://localhost:${server.port}  (data: ${DATA_DIR})`);
+console.log(`PDF editor listening on http://${server.hostname}:${server.port}  (data: ${DATA_DIR})`);
