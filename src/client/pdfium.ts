@@ -2,9 +2,13 @@
 // @ts-ignore - resolved at runtime from /embedpdf/embedpdf.js
 import EmbedPDF from "/embedpdf/embedpdf.js";
 
+import { initTablet } from "./pdfium-tablet";
+
 const select = document.getElementById("files") as HTMLSelectElement;
 const upload = document.getElementById("upload") as HTMLInputElement;
 const target = document.getElementById("viewer")!;
+
+const tablet = initTablet({ target, button: document.getElementById("tabletToggle")! });
 
 const fileUrl = (name: string) => `/api/files/${encodeURIComponent(name)}`;
 
@@ -19,6 +23,7 @@ function open(name: string) {
     tabBar: "always",
     theme: { preference: "system" },
   });
+  tablet.attach(viewer);
   history.replaceState(null, "", `?file=${encodeURIComponent(name)}`);
 }
 

@@ -11,6 +11,20 @@
       #bar select { max-width: 40vw; }
       #bar .spacer { flex: 1; }
       #viewer { flex: 1; min-height: 0; }
+      #bar button { font: inherit; padding: 4px 10px; }
+      #bar button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+      /* Tablet mode: no browser pinch-zoom of the app chrome (the PDF pinch is EmbedPDF's own). */
+      html.tablet, html.tablet body { touch-action: pan-x pan-y; }
+      html.tablet #viewer { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+      html.tablet #bar button, html.tablet #bar select { min-height: 40px; }
+      /* Text stamp dialog (tablet gesture: double-tap, hold the second tap). */
+      #textStampDialog { border: 1px solid #8886; border-radius: 10px; padding: 16px;
+        width: min(480px, calc(100vw - 32px)); background: Canvas; color: CanvasText; }
+      #textStampDialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+      #textStampDialog h3 { margin: 0 0 8px; font-size: 14px; }
+      #textStampDialog textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 18px;
+        padding: 8px; resize: vertical; user-select: text; -webkit-user-select: text; }
+      #textStampDialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
     </style>
   </head>
   <body>
@@ -18,6 +32,7 @@
       <strong>PDFium</strong>
       <select id="files"></select>
       <label>Open… <input id="upload" type="file" accept="application/pdf,.pdf" hidden /></label>
+      <button id="tabletToggle" title="Tablet mode: pen draws (barrel button erases), finger scrolls / pinch-zooms / double-tap toggles fit, double-tap + hold adds text, mouse never draws">Tablet</button>
       <span class="spacer"></span>
       <a href="/">pdf.js editor</a>
     </div>

@@ -17,7 +17,8 @@ export interface RenderedText {
   height: number;
 }
 
-export async function renderTextToFile(text: string): Promise<RenderedText> {
+/** Draws the text onto a fresh canvas (RENDER_SCALE x page units). */
+export function renderTextToCanvas(text: string): { canvas: HTMLCanvasElement; width: number; height: number } {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const font = `${FONT_SIZE * RENDER_SCALE}px ${FONT_FAMILY}`;
   const measure = document.createElement("canvas").getContext("2d")!;
@@ -39,7 +40,11 @@ export async function renderTextToFile(text: string): Promise<RenderedText> {
   ctx.textAlign = rtl ? "right" : "left";
   const x = rtl ? canvas.width - pad : pad;
   lines.forEach((line, i) => ctx.fillText(line, x, pad + lineH * (i + 0.5)));
+  return { canvas, width: canvas.width / RENDER_SCALE, height: canvas.height / RENDER_SCALE };
+}
 
+export async function renderTextToFile(text: string): Promise<RenderedText> {
+  const { canvas, width, height } = renderTextToCanvas(text);
   const blob = await new Promise<Blob>((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/png"),
   );
@@ -48,7 +53,7 @@ export async function renderTextToFile(text: string): Promise<RenderedText> {
     type: "image/png",
     lastModified: Date.now(),
   });
-  return { file, width: canvas.width / RENDER_SCALE, height: canvas.height / RENDER_SCALE };
+  return { file, width, height };
 }
 
 let openDialog: HTMLDialogElement | null = null;
