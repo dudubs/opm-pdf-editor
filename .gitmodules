@@ -1,4 +1,4 @@
 [submodule "vendor/pdfjs"]
 	path = vendor/pdfjs
 	url = https://github.com/dudubs/pdf.js.git
-	branch = opm-eraser
+	branch = opm-dev
