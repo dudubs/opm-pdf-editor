@@ -1,0 +1,12 @@
+# Keep Rust builds gentle on a low-spec PC (see scripts/tauri-win-build.sh).
+# Cargo reads this when run from src-tauri/ (it searches parent directories).
+[build]
+jobs = 2
+
+[profile.release]
+codegen-units = 16   # smaller units -> lower peak memory per rustc
+lto = false
+debug = false
+incremental = false
+strip = true
+opt-level = "s"      # smaller output and faster to compile than the default 3

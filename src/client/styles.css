@@ -19,6 +19,7 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 button, .btn, select, input[type="number"] { font: inherit; color: inherit; background: var(--panel);
   border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer;
   text-decoration: none; display: inline-block; }
+button[hidden], .btn[hidden] { display: none; }
 button:hover:not(:disabled), .btn:hover { background: var(--hover); }
 button:disabled { opacity: 0.5; cursor: default; }
 button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }

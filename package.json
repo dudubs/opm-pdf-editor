@@ -8,13 +8,21 @@
     "build": "bun run scripts/build.ts",
     "start": "bun run src/server.ts",
     "dev": "bun run build && bun --watch run src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:build:win": "bash scripts/tauri-win-native.sh",
+    "tauri:run:win": "bash scripts/tauri-run-win.sh",
+    "tauri:build:win:cross": "bash scripts/tauri-win-build.sh"
   },
   "dependencies": {
-    "pdfjs-dist": "file:vendor/pdfjs/build/dist"
+    "pdfjs-dist": "file:vendor/pdfjs/build/dist",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "@tauri-apps/cli": "^2"
   }
 }

@@ -1,0 +1,7 @@
+# Copy to C:\Users\<you>\.wslconfig (Windows side), then run `wsl --shutdown` in PowerShell.
+# Caps what the whole WSL VM (including Rust builds) can take from Windows.
+# Rule of thumb: memory = ~40-50% of your RAM, processors = half your cores.
+[wsl2]
+memory=5GB
+processors=2
+swap=8GB

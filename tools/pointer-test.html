@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Pointer test (pen / finger / mouse)</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --fg: #e6e8eb; --muted: #8b93a1;
+    --pen: #4ea1ff; --touch: #ff9f43; --mouse: #8be28b; --eraser: #ff5c7a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 system-ui, sans-serif; overflow: hidden; }
+  body { display: grid; grid-template-columns: 1fr 340px; }
+  @media (max-width: 800px) { body { grid-template-columns: 1fr; grid-template-rows: 1fr 220px; } }
+
+  #stage { position: relative; min-width: 0; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+    background: #fff; cursor: crosshair;
+    /* Without this the browser claims finger/pen moves for scroll/zoom and sends pointercancel. */
+    touch-action: none; }
+  #hint { position: absolute; left: 12px; top: 12px; padding: 6px 10px; border-radius: 6px;
+    background: rgba(0,0,0,.55); color: #fff; pointer-events: none; font-size: 13px; }
+
+  aside { background: var(--panel); padding: 12px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+  h2 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  #badge { font-size: 28px; font-weight: 700; padding: 10px 12px; border-radius: 8px; text-align: center;
+    background: #2a2e36; transition: background .1s; }
+  #badge[data-t=pen]   { background: var(--pen);   color: #001a33; }
+  #badge[data-t=touch] { background: var(--touch); color: #331a00; }
+  #badge[data-t=mouse] { background: var(--mouse); color: #0a2a0a; }
+  #badge.eraser { background: var(--eraser); color: #330010; }
+
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+  dt { color: var(--muted); } dd { margin: 0; text-align: right; font-family: ui-monospace, monospace; }
+
+  .bar { height: 8px; background: #2a2e36; border-radius: 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--pen); }
+
+  .counts { display: flex; gap: 8px; }
+  .counts div { flex: 1; text-align: center; padding: 6px; border-radius: 6px; background: #2a2e36; }
+  .counts b { display: block; font-size: 18px; }
+
+  label { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  button { background: #2a2e36; color: var(--fg); border: 1px solid #3a3f49; border-radius: 6px;
+    padding: 8px 12px; font: inherit; cursor: pointer; }
+  button:active { background: #3a3f49; }
+
+  #log { font: 12px/1.35 ui-monospace, monospace; color: var(--muted); white-space: pre; overflow: auto;
+    background: #101216; border-radius: 6px; padding: 8px; flex: 1; min-height: 100px; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="c"></canvas>
+  <div id="hint">Draw with a pen, finger, or mouse. Hover the pen above the tablet to see hover events.</div>
+</div>
+
+<aside>
+  <div id="badge" data-t="">—</div>
+
+  <section>
+    <h2>Pressure</h2>
+    <div class="bar"><i id="pbar"></i></div>
+  </section>
+
+  <section>
+    <h2>Current pointer</h2>
+    <dl id="info"></dl>
+  </section>
+
+  <section>
+    <h2>Down events seen</h2>
+    <div class="counts">
+      <div style="color:var(--pen)"><b id="n-pen">0</b>pen</div>
+      <div style="color:var(--touch)"><b id="n-touch">0</b>touch</div>
+      <div style="color:var(--mouse)"><b id="n-mouse">0</b>mouse</div>
+    </div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:6px">
+    <label><input type="checkbox" id="palm" checked> Palm rejection (ignore touch while pen is near)</label>
+    <label><input type="checkbox" id="pressureWidth" checked> Line width follows pressure</label>
+    <label><input type="checkbox" id="onlyPen"> Draw with pen only</label>
+    <button id="clear">Clear canvas</button>
+  </section>
+
+  <section style="display:flex;flex-direction:column;flex:1;min-height:0;gap:6px">
+    <h2>Event log</h2>
+    <div id="log"></div>
+  </section>
+</aside>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const canvas = $('c'), ctx = canvas.getContext('2d');
+const COLORS = { pen: '#1a73e8', touch: '#f08a24', mouse: '#2e9e2e', eraser: '#ffffff' };
+
+// ---- canvas sizing (HiDPI) ----
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  // preserve drawing across resize
+  const old = document.createElement('canvas');
+  old.width = canvas.width; old.height = canvas.height;
+  if (canvas.width) old.getContext('2d').drawImage(canvas, 0, 0);
+  canvas.width = Math.round(r.width * dpr);
+  canvas.height = Math.round(r.height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (old.width) ctx.drawImage(old, 0, 0, old.width / dpr, old.height / dpr);
+}
+new ResizeObserver(resize).observe(canvas);
+resize();
+
+// ---- state ----
+const active = new Map();          // pointerId -> {x, y, type, eraser}
+const counts = { pen: 0, touch: 0, mouse: 0 };
+let lastPenTime = -Infinity;       // for palm rejection
+const PALM_WINDOW_MS = 500;
+
+function isEraser(e) { return e.pointerType === 'pen' && (e.buttons & 32) !== 0; }
+function penNear() {
+  // pen is in range (hovering or touching) or was very recently
+  return [...active.values()].some(p => p.type === 'pen') ||
+         performance.now() - lastPenTime < PALM_WINDOW_MS;
+}
+
+// ---- readout ----
+function decodeButtons(b) {
+  if (b === 0) return 'none (hover)';
+  const names = [];
+  if (b & 1) names.push('contact/left');
+  if (b & 2) names.push('barrel/right');
+  if (b & 4) names.push('middle');
+  if (b & 8) names.push('back');
+  if (b & 16) names.push('forward');
+  if (b & 32) names.push('ERASER');
+  return names.join('+');
+}
+function show(e, ignored) {
+  const badge = $('badge');
+  const eraser = isEraser(e);
+  badge.dataset.t = e.pointerType;
+  badge.classList.toggle('eraser', eraser);
+  badge.textContent = (eraser ? 'PEN ERASER' : e.pointerType.toUpperCase()) + (ignored ? ' (ignored)' : '');
+  $('pbar').style.width = (e.pressure * 100).toFixed(0) + '%';
+  $('pbar').style.background = eraser ? 'var(--eraser)' : `var(--${e.pointerType === 'pen' ? 'pen' : e.pointerType})`;
+  const rows = [
+    ['event', e.type],
+    ['pointerType', e.pointerType],
+    ['pointerId', e.pointerId],
+    ['isPrimary', e.isPrimary],
+    ['pressure', e.pressure.toFixed(3)],
+    ['tiltX / tiltY', `${e.tiltX}° / ${e.tiltY}°`],
+    ['twist', `${e.twist}°`],
+    ['width × height', `${e.width.toFixed(1)} × ${e.height.toFixed(1)}`],
+    ['buttons', `${e.buttons} (${decodeButtons(e.buttons)})`],
+    ['x, y', `${e.offsetX.toFixed(0)}, ${e.offsetY.toFixed(0)}`],
+  ];
+  if ('altitudeAngle' in e) rows.splice(6, 0, ['altitude/azimuth',
+    `${(e.altitudeAngle * 180 / Math.PI).toFixed(0)}° / ${(e.azimuthAngle * 180 / Math.PI).toFixed(0)}°`]);
+  $('info').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+}
+
+const logEl = $('log'), logLines = [];
+let lastLogKey = '', lastLogTime = 0;
+function log(e, note = '') {
+  // collapse the flood of pointermove events: log at most one per 150ms
+  const key = e.type + e.pointerId;
+  const now = performance.now();
+  if (e.type === 'pointermove' && key === lastLogKey && now - lastLogTime < 150) return;
+  lastLogKey = key; lastLogTime = now;
+  logLines.push(`${e.type.padEnd(13)} ${e.pointerType.padEnd(5)} id${e.pointerId} p=${e.pressure.toFixed(2)} b=${e.buttons} ${note}`);
+  if (logLines.length > 80) logLines.shift();
+  logEl.textContent = logLines.join('\n');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---- drawing ----
+function shouldDraw(e) {
+  if (e.pointerType === 'pen') return true;
+  if ($('onlyPen').checked) return false;
+  if (e.pointerType === 'touch' && $('palm').checked && penNear()) return false;
+  return true;
+}
+function width(e, eraser) {
+  const base = e.pointerType === 'touch' ? 6 : e.pointerType === 'pen' ? 3 : 2;
+  const usePressure = $('pressureWidth').checked && e.pointerType === 'pen';
+  const w = usePressure ? 1 + e.pressure * 14 : base;
+  return eraser ? w * 4 : w;
+}
+function seg(p, x, y, w, color) {
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = color; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(x, y); ctx.stroke();
+}
+function dot(x, y, w, color) {
+  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, w / 2, 0, Math.PI * 2); ctx.fill();
+}
+
+// ---- events ----
+canvas.addEventListener('pointerdown', (e) => {
+  counts[e.pointerType] = (counts[e.pointerType] || 0) + 1;
+  $('n-' + e.pointerType) && ($('n-' + e.pointerType).textContent = counts[e.pointerType]);
+  if (e.pointerType === 'pen') lastPenTime = performance.now();
+
+  const ok = shouldDraw(e);
+  show(e, !ok); log(e, ok ? '' : '[ignored]');
+  if (!ok) return;
+
+  canvas.setPointerCapture(e.pointerId);   // keep receiving moves even outside the canvas
+  const eraser = isEraser(e);
+  const p = { x: e.offsetX, y: e.offsetY, type: e.pointerType, eraser };
+  active.set(e.pointerId, p);
+  dot(p.x, p.y, width(e, eraser), eraser ? COLORS.eraser : COLORS[e.pointerType]);
+  e.preventDefault();
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'pen') lastPenTime = performance.now();
+  const p = active.get(e.pointerId);
+  const hoverOnly = !p;
+  show(e, hoverOnly && e.buttons !== 0 && !shouldDraw(e));
+  log(e, hoverOnly ? '[hover]' : '');
+  if (!p) return;
+
+  // Coalesced events = every sample the digitizer produced since the last frame (smoother ink).
+  const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const ce of (events.length ? events : [e])) {
+    const eraser = p.eraser;
+    seg(p, ce.offsetX, ce.offsetY, width(ce, eraser), eraser ? COLORS.eraser : COLORS[p.type]);
+    p.x = ce.offsetX; p.y = ce.offsetY;
+  }
+  e.preventDefault();
+});
+
+function end(e) {
+  if (e.pointerType === 'pen') lastPenTime = performance.now();
+  show(e); log(e, e.type === 'pointercancel' ? '[CANCELLED by browser]' : '');
+  active.delete(e.pointerId);
+}
+canvas.addEventListener('pointerup', end);
+canvas.addEventListener('pointercancel', end);
+canvas.addEventListener('pointerleave', (e) => { if (!active.has(e.pointerId)) log(e); });
+canvas.addEventListener('pointerenter', (e) => log(e));
+
+// Stop long-press / barrel-button context menus and Windows "press and hold" ripple.
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+$('clear').addEventListener('click', () => {
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore();
+});
+
+// ---- capability summary in log ----
+logLines.push(`PointerEvent: ${'PointerEvent' in window}`);
+logLines.push(`maxTouchPoints: ${navigator.maxTouchPoints}`);
+logLines.push(`pointer:coarse ${matchMedia('(pointer: coarse)').matches}, fine ${matchMedia('(pointer: fine)').matches}`);
+logLines.push(`any-pointer:coarse ${matchMedia('(any-pointer: coarse)').matches}, fine ${matchMedia('(any-pointer: fine)').matches}`);
+logLines.push(`hover ${matchMedia('(hover: hover)').matches}, any-hover ${matchMedia('(any-hover: hover)').matches}`);
+logLines.push('---');
+logEl.textContent = logLines.join('\n');
+</script>
+</body>
+</html>

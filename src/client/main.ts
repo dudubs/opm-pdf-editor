@@ -1,6 +1,7 @@
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import type { PDFDocumentProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { EventBus, LinkTarget, PDFLinkService, PDFViewer } from "pdfjs-dist/legacy/web/pdf_viewer.mjs";
+import { storage, type FileEntry } from "./storage.ts";
 
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.mjs";
 
@@ -17,14 +18,14 @@ const els = {
   pageCount: $<HTMLSpanElement>("pageCount"),
   zoomSelect: $<HTMLSelectElement>("zoomSelect"),
   save: $<HTMLButtonElement>("save"),
+  saveAs: $<HTMLButtonElement>("saveAs"),
+  sidebarTitle: $<HTMLElement>("sidebarTitle"),
   download: $<HTMLAnchorElement>("download"),
   status: $<HTMLSpanElement>("status"),
   tools: $<HTMLDivElement>("tools"),
   eraserSizeWrap: $<HTMLLabelElement>("eraserSizeWrap"),
   eraserSize: $<HTMLInputElement>("eraserSize"),
 };
-
-interface FileInfo { name: string; size: number; modified: string }
 
 const eventBus = new EventBus();
 const linkService = new PDFLinkService({ eventBus, externalLinkTarget: LinkTarget.BLANK });
@@ -44,11 +45,10 @@ const EDITOR_MODES: Record<string, number> = {
   highlight: pdfjs.AnnotationEditorType.HIGHLIGHT,
 };
 
-let currentName: string | null = null;
+/** Library file name (web) or absolute path (desktop) of the open document. */
+let currentId: string | null = null;
 let currentDoc: PDFDocumentProxy | null = null;
 let dirty = false;
-
-const fileUrl = (name: string) => `/api/files/${encodeURIComponent(name)}`;
 
 function setStatus(text: string, isError = false) {
   els.status.textContent = text;
@@ -57,42 +57,52 @@ function setStatus(text: string, isError = false) {
 
 function setDirty(value: boolean) {
   dirty = value;
-  els.save.disabled = !value || !currentName;
+  els.save.disabled = !value || !currentId;
+  els.saveAs.disabled = !currentId;
 }
 
 // ---------- file list ----------
 
 async function refreshFileList() {
-  const res = await fetch("/api/files");
-  const files: FileInfo[] = await res.json();
+  let files: FileEntry[];
+  try {
+    files = await storage.list();
+  } catch (err) {
+    console.error(err);
+    return setStatus("Could not load the file list", true);
+  }
   els.fileList.replaceChildren(
     ...files.map((f) => {
       const li = document.createElement("li");
-      li.classList.toggle("current", f.name === currentName);
+      li.classList.toggle("current", f.id === currentId);
       const a = document.createElement("a");
-      a.href = `?file=${encodeURIComponent(f.name)}`;
+      a.href = storage.kind === "web" ? `?file=${encodeURIComponent(f.id)}` : "#";
       a.textContent = f.name;
-      a.title = `${f.name} (${(f.size / 1024).toFixed(0)} KB)`;
+      a.title = f.size === undefined ? f.id : `${f.name} (${(f.size / 1024).toFixed(0)} KB)`;
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        void openFile(f.name);
+        void openFile(f.id);
       });
       const del = document.createElement("button");
       del.className = "del";
       del.textContent = "✕";
-      del.title = "Delete from server";
-      del.addEventListener("click", () => void deleteFile(f.name));
+      del.title = storage.kind === "web" ? "Delete from server" : "Remove from recent files";
+      del.addEventListener("click", () => void deleteFile(f.id));
       li.append(a, del);
       return li;
     }),
   );
 }
 
-async function deleteFile(name: string) {
-  if (!confirm(`Delete "${name}" from the server?`)) return;
-  const res = await fetch(fileUrl(name), { method: "DELETE" });
-  if (!res.ok) return setStatus("Delete failed", true);
-  if (name === currentName) await closeDocument();
+async function deleteFile(id: string) {
+  if (storage.kind === "web" && !confirm(`Delete "${storage.nameOf(id)}" from the server?`)) return;
+  try {
+    await storage.remove(id);
+  } catch (err) {
+    console.error(err);
+    return setStatus(storage.kind === "web" ? "Delete failed" : "Could not update recent files", true);
+  }
+  if (storage.kind === "web" && id === currentId) await closeDocument();
   await refreshFileList();
 }
 
@@ -107,7 +117,7 @@ async function closeDocument() {
   linkService.setDocument(null);
   await currentDoc?.destroy();
   currentDoc = null;
-  currentName = null;
+  currentId = null;
   els.empty.classList.remove("hidden");
   els.download.removeAttribute("href");
   els.pageCount.textContent = "/ –";
@@ -115,12 +125,13 @@ async function closeDocument() {
   setDirty(false);
 }
 
-async function openFile(name: string, { push = true, force = false } = {}) {
+async function openFile(id: string, { push = true, force = false } = {}) {
   if (!force && !confirmDiscard()) return;
+  const name = storage.nameOf(id);
   setStatus("Loading…");
   try {
     const task = pdfjs.getDocument({
-      url: `${fileUrl(name)}?t=${Date.now()}`,
+      ...(await storage.source(id)),
       cMapUrl: "/pdfjs/cmaps/",
       cMapPacked: true,
       standardFontDataUrl: "/pdfjs/standard_fonts/",
@@ -129,25 +140,27 @@ async function openFile(name: string, { push = true, force = false } = {}) {
     });
     const doc = await task.promise;
     const previous = currentDoc;
-    const page = force && name === currentName ? viewer.currentPageNumber : 1;
+    const page = force && id === currentId ? viewer.currentPageNumber : 1;
     currentDoc = doc;
-    currentName = name;
+    currentId = id;
     viewer.setDocument(doc);
     linkService.setDocument(doc, null);
     void previous?.destroy();
 
     // Typed as `null` upstream, but pdf.js invokes these callbacks when set.
-    const storage = doc.annotationStorage as unknown as Record<string, (() => void) | null>;
-    storage.onSetModified = () => setDirty(true);
-    storage.onResetModified = () => setDirty(false);
+    const annotations = doc.annotationStorage as unknown as Record<string, (() => void) | null>;
+    annotations.onSetModified = () => setDirty(true);
+    annotations.onResetModified = () => setDirty(false);
     setDirty(false);
 
     els.empty.classList.add("hidden");
-    els.download.href = fileUrl(name);
-    els.download.download = name;
+    if (storage.kind === "web") {
+      els.download.href = storage.downloadUrl(id);
+      els.download.download = name;
+    }
     els.pageCount.textContent = `/ ${doc.numPages}`;
     document.title = `${name} – PDF Editor`;
-    if (push) history.pushState(null, "", `?file=${encodeURIComponent(name)}`);
+    if (push && storage.kind === "web") history.pushState(null, "", `?file=${encodeURIComponent(id)}`);
     // Restore the page once the pages have been initialised.
     eventBus.on("pagesinit", () => {
       viewer.currentScaleValue = els.zoomSelect.value;
@@ -161,25 +174,19 @@ async function openFile(name: string, { push = true, force = false } = {}) {
   }
 }
 
-// ---------- save / upload ----------
+// ---------- save / open ----------
 
 async function save() {
-  if (!currentDoc || !currentName) return;
+  if (!currentDoc || !currentId) return;
+  const id = currentId;
   setStatus("Saving…");
   els.save.disabled = true;
   try {
-    const bytes = await currentDoc.saveDocument();
-    const res = await fetch(fileUrl(currentName), {
-      method: "PUT",
-      headers: { "Content-Type": "application/pdf" },
-      body: new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "application/pdf" }),
-    });
-    if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+    await storage.write(id, await currentDoc.saveDocument());
     setDirty(false);
     // Reload so the viewer shows the newly flattened/saved content.
-    await openFile(currentName, { push: false, force: true });
-    setStatus("Saved");
-    setTimeout(() => els.status.textContent === "Saved" && setStatus(""), 2000);
+    await openFile(id, { push: false, force: true });
+    flashSaved();
   } catch (err) {
     console.error(err);
     setStatus(`Save failed: ${(err as Error).message}`, true);
@@ -187,15 +194,49 @@ async function save() {
   }
 }
 
+async function saveAs() {
+  if (storage.kind !== "desktop" || !currentDoc || !currentId) return;
+  setStatus("Saving…");
+  try {
+    const entry = await storage.saveAs(storage.nameOf(currentId), await currentDoc.saveDocument());
+    if (!entry) return setStatus("");
+    setDirty(false);
+    await openFile(entry.id, { push: false, force: true });
+    flashSaved();
+  } catch (err) {
+    console.error(err);
+    setStatus(`Save failed: ${(err as Error).message}`, true);
+  }
+}
+
+function flashSaved() {
+  setStatus("Saved");
+  setTimeout(() => els.status.textContent === "Saved" && setStatus(""), 2000);
+}
+
+/** Web: upload into the server library, then open it. */
 async function upload(file: File) {
-  if (!confirmDiscard()) return;
+  if (storage.kind !== "web" || !confirmDiscard()) return;
   setStatus("Uploading…");
-  const form = new FormData();
-  form.set("file", file);
-  const res = await fetch("/api/files", { method: "POST", body: form });
-  const body = await res.json();
-  if (!res.ok) return setStatus(`Upload failed: ${body.error}`, true);
-  await openFile(body.name, { force: true });
+  try {
+    const entry = await storage.add(file);
+    await openFile(entry.id, { force: true });
+  } catch (err) {
+    console.error(err);
+    setStatus(`Upload failed: ${(err as Error).message}`, true);
+  }
+}
+
+/** Desktop: native Open dialog. */
+async function openNative() {
+  if (storage.kind !== "desktop" || !confirmDiscard()) return;
+  try {
+    const entry = await storage.pick();
+    if (entry) await openFile(entry.id, { force: true });
+  } catch (err) {
+    console.error(err);
+    setStatus(`Could not open file: ${(err as Error).message}`, true);
+  }
 }
 
 // ---------- toolbar wiring ----------
@@ -205,8 +246,16 @@ els.fileInput.addEventListener("change", () => {
   els.fileInput.value = "";
   if (file) void upload(file);
 });
+if (storage.kind === "desktop") {
+  // Replace the browser file chooser with the native dialog.
+  els.fileInput.addEventListener("click", (e) => {
+    e.preventDefault();
+    void openNative();
+  });
+}
 
 els.save.addEventListener("click", () => void save());
+els.saveAs.addEventListener("click", () => void saveAs());
 $("toggleSidebar").addEventListener("click", () => els.sidebar.classList.toggle("hidden"));
 $("prevPage").addEventListener("click", () => viewer.previousPage());
 $("nextPage").addEventListener("click", () => viewer.nextPage());
@@ -319,14 +368,32 @@ window.addEventListener("keydown", (e) => {
     if (dirty) void save();
   }
 });
-window.addEventListener("popstate", () => {
-  const name = new URLSearchParams(location.search).get("file");
-  if (name) void openFile(name, { push: false });
-  else void closeDocument();
-});
+if (storage.kind === "web") {
+  window.addEventListener("popstate", () => {
+    const name = new URLSearchParams(location.search).get("file");
+    if (name) void openFile(name, { push: false });
+    else void closeDocument();
+  });
+}
 
 // ---------- boot ----------
 
+if (storage.kind === "desktop") {
+  // Desktop: no server library, no download link; Tauri delivers dropped files as paths.
+  els.sidebarTitle.textContent = "Recent files";
+  els.download.hidden = true;
+  els.saveAs.hidden = false;
+  els.save.title = "Save changes to the file";
+  const desktop = storage; // keeps the narrowed type inside the callback
+  desktop.onDrop((path) => {
+    if (!confirmDiscard()) return;
+    els.container.classList.remove("dragover");
+    void openFile(desktop.remember(path).id, { force: true });
+  });
+}
+
 await refreshFileList();
-const initial = new URLSearchParams(location.search).get("file");
-if (initial) await openFile(initial, { push: false, force: true });
+if (storage.kind === "web") {
+  const initial = new URLSearchParams(location.search).get("file");
+  if (initial) await openFile(initial, { push: false, force: true });
+}
