@@ -271,11 +271,6 @@ els.tools.addEventListener("click", (e) => {
   for (const b of els.tools.querySelectorAll("button")) b.classList.toggle("active", b === btn);
 });
 
-// Erasing is undoable like any other edit: it makes the document dirty.
-eventBus.on("annotationeditorstateschanged", (e: { details: { hasSomethingToUndo?: boolean } }) => {
-  if (e.details?.hasSomethingToUndo) setDirty(true);
-});
-
 eventBus.on("pagechanging", (e: { pageNumber: number }) => {
   els.pageNumber.value = String(e.pageNumber);
 });
