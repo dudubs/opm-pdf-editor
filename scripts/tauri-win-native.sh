@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build the Windows (NSIS) installer using the *Windows* Rust toolchain, driven from WSL.
+# Build the Windows exe using the *Windows* Rust toolchain, driven from WSL.
 # Dev stays in WSL/Bun; only the Rust compile runs on Windows (via powershell.exe interop).
 #
-# Produces the NSIS installer (BUNDLE=none for just the exe). Steps: bun build in WSL -> stage the inputs on the Windows disk -> cargo/tauri on Windows
+# Produces just the exe, no installer (BUNDLE=nsis also builds the NSIS installer). Steps: bun build in WSL -> stage the inputs on the Windows disk -> cargo/tauri on Windows
 # (BelowNormal priority, 2 jobs) -> exe under $STAGE/src-tauri/target/release.
 #
 # Requires on Windows: rustup with a recent `stable` toolchain (not changed as default),
@@ -13,7 +13,7 @@ export PATH="$HOME/.bun/bin:$PATH"
 
 STAGE_WSL="${STAGE_WSL:-/mnt/c/dev/opm-pdf-editor-win}"
 JOBS="${CARGO_BUILD_JOBS:-2}"
-BUNDLE="${BUNDLE:-nsis}"   # "nsis" = installer; "none" = exe only
+BUNDLE="${BUNDLE:-none}"   # "none" = exe only (default); "nsis" = also build the installer
 
 echo "==> Web build (bun, desktop: PDFium editor only)"
 bun run build:desktop
