@@ -107,6 +107,34 @@ export function initTablet({
     }
   }
 
+  /**
+   * Existing ink is rendered as SVG paths that grab the press (to select it) before the ink tool sees it,
+   * so a stroke starting on old ink would not draw. While a pen is in range (hover precedes touch) those
+   * paths are made transparent to pointer events; the first mouse movement turns that off again.
+   */
+  const PEN_CLASS = "opm-pen";
+  function setPenPassThrough(on: boolean) {
+    if (!viewer) return;
+    if (on) {
+      const root = shadow();
+      if (root && !root.getElementById("opm-pen-style")) {
+        const style = document.createElement("style");
+        style.id = "opm-pen-style";
+        style.textContent = `:host(.${PEN_CLASS}) #document-content svg * { pointer-events: none !important; }`;
+        root.append(style);
+      }
+    }
+    viewer.classList.toggle(PEN_CLASS, on);
+  }
+
+  /** Pen touches never select (no selection box / resize handles); mouse clicks still do. */
+  let lastDownType = "";
+  function clearSelection() {
+    if (!tablet || lastDownType !== "pen") return;
+    const a = annScope();
+    if (a?.getSelectedAnnotation?.()) a.deselectAnnotation();
+  }
+
   function setTablet(on: boolean, persist = true) {
     tablet = on;
     document.documentElement.classList.toggle("tablet", on);
@@ -117,6 +145,7 @@ export function initTablet({
       } catch {}
     }
     applyTool();
+    if (!on) setPenPassThrough(false);
   }
   button.addEventListener("click", () => setTablet(!tablet));
 
@@ -412,6 +441,9 @@ export function initTablet({
 
   function onPointer(e: PointerEvent) {
     if (!inContent(e)) return;
+    if (e.type === "pointerdown") lastDownType = e.pointerType;
+    if (e.pointerType === "pen") setPenPassThrough(tablet);
+    else if (e.pointerType === "mouse") setPenPassThrough(false);
     if (textArmed && e.type === "pointerdown" && swallowId === null) swallowId = e.pointerId;
     if (swallowId === e.pointerId) {
       e.stopPropagation();
@@ -522,6 +554,8 @@ export function initTablet({
       scroll: p("scroll"),
     };
     caps = c;
+    // Pen touches never leave an annotation selected.
+    c.ann.onStateChange?.(() => clearSelection());
     // A finished stroke stays unselected, so the next pen stroke never grabs the previous one.
     const ink = c.ann.getTool?.("ink");
     if (ink?.behavior) ink.behavior.selectAfterCreate = false;
