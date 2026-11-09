@@ -267,6 +267,23 @@ export function promptTextEx(initialStored = "", opts: PromptOptions = {}): Prom
     let result: string | null = null;
     let move = false;
     dialog.querySelector('[data-act="cancel"]')!.addEventListener("click", () => dialog.close());
+    // With the page visible behind the dialog, pressing the page while nothing is typed just dismisses it.
+    if (opts.anchor) {
+      // Only a press that started on the backdrop counts: the click synthesized from the finger that opened
+      // the dialog (pressed on the page before it existed) must not close it again.
+      let pressedOutside = false;
+      dialog.addEventListener("pointerdown", (e) => {
+        pressedOutside = e.target === dialog;
+      });
+      dialog.addEventListener("click", (e) => {
+        const pressed = pressedOutside;
+        pressedOutside = false;
+        if (!pressed || e.target !== dialog || textarea.value.trim()) return;
+        const r = dialog.getBoundingClientRect();
+        const outside = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+        if (outside) dialog.close();
+      });
+    }
     dialog.querySelector('[data-act="move"]')?.addEventListener("click", () => {
       move = true;
       dialog.close();
