@@ -4,7 +4,7 @@
 // Product (Tauri desktop): files are opened from disk by path (native dialog, drag-and-drop, recent
 // files, "open with" / command line via the Rust shell) and Save writes back to the same path; Save As
 // picks a new one. The PDF is handed to EmbedPDF as bytes, so nothing here talks to a server.
-// Dev (plain browser + the Bun server): `?file=<name>` loads from / saves to the server's data dir.
+// Dev (plain browser + the Bun server): Open… / drop uploads a local PDF into the server data dir; `?file=<name>` loads from / saves to it.
 // @ts-ignore - resolved at runtime from /embedpdf/embedpdf.js
 import EmbedPDF from "/embedpdf/embedpdf.js";
 
@@ -15,12 +15,14 @@ import { storage } from "./storage";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const desktop = storage.kind === "desktop" ? storage : null;
+const web = storage.kind === "web" ? storage : null;
 
 const target = document.getElementById("viewer")!;
 const openButton = document.getElementById("open") as HTMLButtonElement;
 const recentSelect = document.getElementById("recents") as HTMLSelectElement;
 const saveButton = document.getElementById("save") as HTMLButtonElement;
 const saveAsButton = document.getElementById("saveAs") as HTMLButtonElement;
+const fileInput = document.getElementById("fileInput") as HTMLInputElement;
 const statusEl = document.getElementById("status")!;
 const fileNameEl = document.getElementById("fileName")!;
 
@@ -132,8 +134,8 @@ async function readBytes(id: string): Promise<Uint8Array> {
 }
 
 /** Opens a file (replacing the current one after the unsaved-changes prompt). */
-async function openFile(id: string) {
-  if (busy || !(await confirmDiscard())) return;
+async function openFile(id: string, { confirmed = false } = {}) {
+  if (busy || (!confirmed && !(await confirmDiscard()))) return;
   busy = true;
   refreshChrome();
   setStatus(`Opening ${storage.nameOf(id)}…`);
@@ -153,9 +155,32 @@ async function openFile(id: string) {
 }
 
 async function pickAndOpen() {
-  if (!desktop || busy) return;
-  const entry = await desktop.pick();
+  if (busy) return;
+  if (web) {
+    fileInput.click();
+    return;
+  }
+  const entry = await desktop?.pick();
   if (entry) await openFile(entry.id);
+}
+
+/** Browser: uploads a local PDF into the server library (never overwriting), then opens it. */
+async function uploadAndOpen(file: File) {
+  if (!web || busy || !(await confirmDiscard())) return;
+  busy = true;
+  refreshChrome();
+  setStatus(`Uploading ${file.name}…`);
+  let id: string;
+  try {
+    id = (await web.add(file)).id;
+  } catch (err) {
+    setStatus(`Could not open ${file.name}: ${errorText(err)}`, true);
+    busy = false;
+    refreshChrome();
+    return;
+  }
+  busy = false;
+  await openFile(id, { confirmed: true });
 }
 
 // ---------- save ----------
@@ -218,6 +243,11 @@ async function saveAs() {
 // ---------- wiring ----------
 
 openButton.addEventListener("click", () => void pickAndOpen());
+fileInput.addEventListener("change", () => {
+  const file = fileInput.files?.[0];
+  fileInput.value = "";
+  if (file) void uploadAndOpen(file);
+});
 recentSelect.addEventListener("change", () => {
   const id = recentSelect.value;
   recentSelect.value = "";
@@ -232,7 +262,7 @@ window.addEventListener("keydown", (e) => {
   if (key === "s") {
     e.preventDefault();
     void (e.shiftKey ? saveAs() : save());
-  } else if (key === "o" && desktop) {
+  } else if (key === "o") {
     e.preventDefault();
     void pickAndOpen();
   }
@@ -242,6 +272,11 @@ window.addEventListener("beforeunload", (e) => {
 });
 // Keep the browser from navigating to a dropped file when the drop is not a handled .pdf.
 for (const type of ["dragover", "drop"]) window.addEventListener(type, (e) => e.preventDefault());
+// Browser: dropping a .pdf anywhere opens it (desktop gets dropped paths from Tauri instead).
+window.addEventListener("drop", (e) => {
+  const file = [...(e.dataTransfer?.files ?? [])].find((f) => f.name.toLowerCase().endsWith(".pdf"));
+  if (file) void uploadAndOpen(file);
+});
 
 async function startDesktop(d: NonNullable<typeof desktop>) {
   openButton.hidden = recentSelect.hidden = saveAsButton.hidden = false;
@@ -269,6 +304,7 @@ async function startDesktop(d: NonNullable<typeof desktop>) {
 if (desktop) {
   void startDesktop(desktop).catch((err) => setStatus(`Startup failed: ${errorText(err)}`, true));
 } else {
+  openButton.hidden = false;
   const name = new URLSearchParams(location.search).get("file");
   if (name) void openFile(name);
 }
