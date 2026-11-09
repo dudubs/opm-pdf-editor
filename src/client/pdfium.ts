@@ -10,6 +10,7 @@ import EmbedPDF from "/embedpdf/embedpdf.js";
 
 import { viewerConfig } from "./pdfium-config";
 import { initTablet } from "./pdfium-tablet";
+import { createToolbar, toolbarIcons } from "./pdfium-toolbar";
 import { storage } from "./storage";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -20,17 +21,13 @@ const web = storage.kind === "web" ? storage : null;
 const target = document.getElementById("viewer")!;
 const openButton = document.getElementById("open") as HTMLButtonElement;
 const recentSelect = document.getElementById("recents") as HTMLSelectElement;
-const saveButton = document.getElementById("save") as HTMLButtonElement;
-const saveAsButton = document.getElementById("saveAs") as HTMLButtonElement;
 const fileInput = document.getElementById("fileInput") as HTMLInputElement;
 const statusEl = document.getElementById("status")!;
-const fileNameEl = document.getElementById("fileName")!;
 
-const tablet = initTablet({
-  target,
-  button: document.getElementById("tabletToggle")!,
-  textButton: document.getElementById("textTool")!,
-});
+// The toolbar is EmbedPDF's own (pdfium-toolbar.ts); `toolbar` is assigned below, after the tablet controller
+// it needs, so the tablet's first change notification (at init) must tolerate it being unset.
+let toolbar: ReturnType<typeof createToolbar> | undefined;
+const tablet = initTablet({ target, onChange: () => toolbar?.refresh() });
 
 let viewer: any;
 /** Absolute path (desktop) or server file name (dev). Null while nothing is open. */
@@ -54,10 +51,7 @@ function refreshChrome() {
   const name = currentId ? storage.nameOf(currentId) : "";
   const title = `${dirty ? "• " : ""}${name ? `${name} — ` : ""}PDF Editor`;
   document.title = title;
-  fileNameEl.textContent = name;
-  fileNameEl.title = currentId ?? "";
-  saveButton.disabled = !currentId || !dirty || busy;
-  saveAsButton.disabled = !currentId || busy;
+  toolbar?.refresh();
   if (desktop) {
     void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().setTitle(title));
   }
@@ -84,6 +78,7 @@ const errorText = (err: unknown) => (err instanceof Error ? err.message : String
 async function refreshRecents() {
   if (!desktop) return;
   const files = await desktop.list();
+  recentSelect.hidden = files.length === 0;
   recentSelect.replaceChildren(
     new Option(files.length ? "Recent files…" : "No recent files", ""),
     ...files.map((f) => Object.assign(new Option(f.name, f.id), { title: f.id })),
@@ -103,22 +98,26 @@ async function watchChanges(v: any) {
   });
 }
 
-function mount(id: string, bytes: Uint8Array) {
+async function mount(id: string, bytes: Uint8Array) {
   target.replaceChildren();
   currentId = id;
   dirty = false;
   setStatus("");
-  viewer = EmbedPDF.init({
-    type: "container",
-    target,
-    ...viewerConfig(),
-    // EmbedPDF may transfer the buffer to its worker, so give it its own copy.
-    documentManager: { initialDocuments: [{ buffer: bytes.slice().buffer, name: storage.nameOf(id) }] },
-  });
-  tablet.attach(viewer);
-  void watchChanges(viewer);
+  // No initial document: the toolbar (commands + schema) must be in place before one opens.
+  const v = EmbedPDF.init({ type: "container", target, ...viewerConfig(), icons: toolbarIcons });
+  viewer = v;
+  tablet.attach(v);
+  void watchChanges(v);
   refreshChrome();
   if (!desktop) history.replaceState(null, "", `?file=${encodeURIComponent(id)}`);
+  const { registry } = await toolbar!.setup(v);
+  if (viewer !== v) return;
+  // EmbedPDF may transfer the buffer to its worker, so give it its own copy. Load errors (e.g. a
+  // password prompt) are EmbedPDF's own UI to show, so the task is not awaited.
+  registry.getPlugin("document-manager").provides().openDocumentBuffer({
+    buffer: bytes.slice().buffer,
+    name: storage.nameOf(id),
+  });
 }
 
 function isPdf(bytes: Uint8Array) {
@@ -143,9 +142,10 @@ async function openFile(id: string, { confirmed = false } = {}) {
     const bytes = await readBytes(id);
     if (!isPdf(bytes)) throw new Error("Not a valid PDF");
     desktop?.remember(id);
-    mount(id, bytes);
+    await mount(id, bytes);
     setStatus("");
   } catch (err) {
+    console.error(err);
     setStatus(`Could not open ${storage.nameOf(id)}: ${errorText(err)}`, true);
   } finally {
     busy = false;
@@ -253,8 +253,16 @@ recentSelect.addEventListener("change", () => {
   recentSelect.value = "";
   if (id) void openFile(id);
 });
-saveButton.addEventListener("click", () => void save());
-saveAsButton.addEventListener("click", () => void saveAs());
+toolbar = createToolbar({
+  tablet,
+  desktop: !!desktop,
+  open: () => void pickAndOpen(),
+  save: () => void save(),
+  saveAs: () => void saveAs(),
+  canSave: () => !!currentId && dirty && !busy,
+  canSaveAs: () => !!currentId && !busy,
+  busy: () => busy,
+});
 
 window.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
@@ -279,7 +287,6 @@ window.addEventListener("drop", (e) => {
 });
 
 async function startDesktop(d: NonNullable<typeof desktop>) {
-  openButton.hidden = recentSelect.hidden = saveAsButton.hidden = false;
   d.onDrop((path) => void openFile(path));
 
   const { invoke } = await import("@tauri-apps/api/core");
@@ -304,7 +311,6 @@ async function startDesktop(d: NonNullable<typeof desktop>) {
 if (desktop) {
   void startDesktop(desktop).catch((err) => setStatus(`Startup failed: ${errorText(err)}`, true));
 } else {
-  openButton.hidden = false;
   const name = new URLSearchParams(location.search).get("file");
   if (name) void openFile(name);
 }

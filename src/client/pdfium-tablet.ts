@@ -48,16 +48,19 @@ interface Caps {
 export interface TabletController {
   /** Call after every EmbedPDF.init(). */
   attach(viewer: any): void;
+  isTablet(): boolean;
+  toggleTablet(): void;
+  isTextArmed(): boolean;
+  toggleText(): void;
 }
 
 export function initTablet({
   target,
-  button,
-  textButton,
+  onChange,
 }: {
   target: HTMLElement;
-  button: HTMLElement;
-  textButton: HTMLElement;
+  /** Called whenever tablet mode or the armed state of the Text tool changes (toolbar refresh). */
+  onChange: () => void;
 }): TabletController {
   let tablet = false;
   let viewer: any = null;
@@ -138,7 +141,6 @@ export function initTablet({
   function setTablet(on: boolean, persist = true) {
     tablet = on;
     document.documentElement.classList.toggle("tablet", on);
-    button.classList.toggle("active", on);
     if (persist) {
       try {
         localStorage.setItem(TABLET_KEY, on ? "1" : "0");
@@ -146,8 +148,8 @@ export function initTablet({
     }
     applyTool();
     if (!on) setPenPassThrough(false);
+    onChange();
   }
-  button.addEventListener("click", () => setTablet(!tablet));
 
   // ---------- coordinates ----------
   /** Client point -> { pageIndex, x, y } in page points (origin top-left), or null between pages. */
@@ -432,9 +434,8 @@ export function initTablet({
     textArmed = on;
     swallowId = null;
     target.classList.toggle("text-armed", on);
-    textButton.classList.toggle("active", on);
+    onChange();
   }
-  textButton.addEventListener("click", () => setTextArmed(!textArmed));
   window.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && textArmed) setTextArmed(false);
   });
@@ -579,8 +580,13 @@ export function initTablet({
     });
     const onDoc = () => {
       settleUntil = performance.now() + 4000;
-      registerEraser();
-      applyTool();
+      try {
+        registerEraser();
+        applyTool();
+      } catch {
+        // "Active document changed" can fire before the annotation plugin has created its state for the
+        // new document; the document-opened event / the polling below call this again once it exists.
+      }
     };
     c.docs.onDocumentOpened?.(onDoc);
     c.docs.onActiveDocumentChanged?.(onDoc);
@@ -595,5 +601,11 @@ export function initTablet({
   }
 
   setTablet(loadTabletMode(), false);
-  return { attach: (v) => void attach(v) };
+  return {
+    attach: (v) => void attach(v),
+    isTablet: () => tablet,
+    toggleTablet: () => setTablet(!tablet),
+    isTextArmed: () => textArmed,
+    toggleText: () => setTextArmed(!textArmed),
+  };
 }
