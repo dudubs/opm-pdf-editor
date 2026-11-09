@@ -25,7 +25,7 @@
       html.tablet, html.tablet body { touch-action: pan-x pan-y; }
       html.tablet #viewer { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
       html.tablet #empty button, html.tablet #empty select { min-height: 40px; }
-      /* Text stamp dialog (tablet gesture: double-tap, hold the second tap). */
+      /* Text stamp dialog (tablet gesture: double-tap, hold the second tap, optionally drag a box). */
       #textStampDialog { border: 1px solid #8886; border-radius: 10px; padding: 16px;
         width: min(480px, calc(100vw - 32px)); background: Canvas; color: CanvasText; }
       #textStampDialog::backdrop { background: rgba(0, 0, 0, 0.4); }
@@ -35,6 +35,11 @@
       #textStampDialog .buttons { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
       #textStampDialog .buttons .spacer { flex: 1; }
       #textStampDialog .dir { display: flex; align-items: center; gap: 6px; }
+      /* With the live preview on the page: docked top/bottom (inline style), page stays visible behind it. */
+      #textStampDialog.with-preview { padding: 12px; }
+      #textStampDialog.with-preview::backdrop { background: transparent; }
+      #textStampDialog.with-preview .buttons { flex-wrap: wrap; }
+      html.tablet #textStampDialog button { min-height: 40px; }
     </style>
   </head>
   <body>

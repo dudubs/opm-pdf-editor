@@ -1,18 +1,20 @@
 // Tablet mode for the PDFium (EmbedPDF) editor — same behaviour as the pdf.js editor's tablet mode:
 //   pen    draws ink; barrel button / eraser end erases the strokes it touches while held
 //   finger scrolls (one finger), pinch-zooms (EmbedPDF's own gesture), double-tap toggles fit-page /
-//          fit-width, double-tap + hold the second tap opens the text-stamp dialog
+//          fit-width, double-tap + hold the second tap starts a text stamp: lift without moving for a default
+//          box at that point, or keep the finger down and drag to draw the box the text will fill
 //   mouse  never draws; it only interacts with existing annotations
 //
 // Text stamps (Hebrew-safe: text is rendered to an image, the source text stays in /Contents) are also
 // reachable outside tablet mode: the "Text" button (or EmbedPDF's own Text tool) arms a one-shot
-// placement click, and double-clicking an existing text stamp edits it.
+// placement click, and double-clicking an existing text stamp edits it. A stamp always fills its box (font
+// size fitted to it); the dialog previews that live on the page and can move / resize the box.
 //
 // EmbedPDF sets `touch-action: none` on its pages while the ink tool is active, so finger scrolling
 // is done here. Pointer events are filtered in the capture phase on the viewer's host element, before
 // they reach the plugin's listeners inside the shadow DOM.
 
-import { promptText, renderTextToCanvas } from "./textStamp";
+import { promptTextEx, renderTextToCanvas } from "./textStamp";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -28,6 +30,17 @@ const TAP_MAX_MOVE = 20; // px
 const DOUBLE_TAP_MAX_GAP_MS = 500; // first tap up -> second tap down
 const DOUBLE_TAP_MAX_DIST = 60; // px
 const DOUBLE_TAP_HOLD_MS = 500;
+const AREA_START_MOVE_PX = 10; // after the hold, moving this far starts the text box rectangle
+const AREA_MIN_PX = 24; // a drawn box smaller than this (on screen) counts as no box
+const MIN_BOX = 12; // page units, smallest box when resizing
+const DEFAULT_BOX = { width: 200, height: 60 }; // page units, a text stamp placed without drawing a box
+
+interface PageRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 function loadTabletMode(): boolean {
   try {
@@ -172,6 +185,48 @@ export function initTablet({
     return { pageIndex: layout.pageIndex as number, x, y, zoom };
   }
 
+  /** Where a page sits on screen: client px of its top-left corner, its size in page units, and the zoom. */
+  function pageFrame(pageIndex: number) {
+    if (!caps) return null;
+    const id = docId();
+    const wrap = scroller()?.firstElementChild as HTMLElement | null;
+    if (!id || !wrap) return null;
+    const zoom: number = caps.zoom.forDocument(id).getState().currentZoomLevel;
+    const items: any[] = caps.scroll.forDocument(id).getLayout().virtualItems;
+    const item = items.find((i) => i.pageLayouts?.[0]?.pageIndex === pageIndex);
+    if (!item) return null;
+    const wr = wrap.getBoundingClientRect();
+    return {
+      zoom,
+      left: wr.left + (wr.width - item.width * zoom) / 2,
+      top: wr.top + item.offset * zoom,
+      width: item.width as number,
+      height: item.height as number,
+    };
+  }
+
+  /** A client point as a point on the given page, clamped to the page. */
+  function clampToPage(pageIndex: number, cx: number, cy: number) {
+    const f = pageFrame(pageIndex);
+    if (!f) return null;
+    return {
+      x: Math.max(0, Math.min(f.width, (cx - f.left) / f.zoom)),
+      y: Math.max(0, Math.min(f.height, (cy - f.top) / f.zoom)),
+      zoom: f.zoom,
+    };
+  }
+
+  function pageRectToClient(pageIndex: number, r: PageRect) {
+    const f = pageFrame(pageIndex);
+    if (!f) return null;
+    return {
+      left: f.left + r.x * f.zoom,
+      top: f.top + r.y * f.zoom,
+      width: r.width * f.zoom,
+      height: r.height * f.zoom,
+    };
+  }
+
   // ---------- eraser ----------
   let erasing = false;
   const ring = document.createElement("div");
@@ -302,6 +357,87 @@ export function initTablet({
     holdTimer = null;
   };
 
+  // After the hold fired the finger either lifts (default box at that point) or drags out the text box.
+  let area: { phase: "armed" | "drawing"; pageIndex: number; cx0: number; cy0: number; p0: { x: number; y: number }; rect: PageRect | null } | null = null;
+  const areaEl = document.createElement("div");
+  areaEl.style.cssText =
+    "position:fixed;left:0;top:0;box-sizing:border-box;pointer-events:none;z-index:1000;display:none;" +
+    "border:2px dashed #2563eb;background:rgba(37,99,235,0.12)";
+  document.body.append(areaEl);
+  const blockTouchMove = (ev: TouchEvent) => ev.preventDefault();
+
+  function showAreaMark(cx: number, cy: number) {
+    const r = 16;
+    Object.assign(areaEl.style, {
+      display: "block",
+      borderRadius: "50%",
+      transform: `translate(${cx - r}px, ${cy - r}px)`,
+      width: `${r * 2}px`,
+      height: `${r * 2}px`,
+    });
+  }
+  function showAreaRect(c: { left: number; top: number; width: number; height: number }) {
+    Object.assign(areaEl.style, {
+      display: "block",
+      borderRadius: "4px",
+      transform: `translate(${c.left}px, ${c.top}px)`,
+      width: `${c.width}px`,
+      height: `${c.height}px`,
+    });
+  }
+  function cancelArea() {
+    area = null;
+    areaEl.style.display = "none";
+    window.removeEventListener("touchmove", blockTouchMove);
+  }
+
+  /** The hold fired: wait for the finger to lift (point) or to move (box). */
+  function armArea(cx: number, cy: number) {
+    const p = pointToPage(cx, cy);
+    if (!p) {
+      void openTextStamp(cx, cy); // nothing under the finger: openTextStamp ignores it
+      return;
+    }
+    pan = null; // finger moves now draw the box instead of scrolling
+    area = { phase: "armed", pageIndex: p.pageIndex, cx0: cx, cy0: cy, p0: { x: p.x, y: p.y }, rect: null };
+    // The browser must not take the drag for a native pan (it would cancel the pointer).
+    window.addEventListener("touchmove", blockTouchMove, { passive: false });
+    try {
+      navigator.vibrate?.(20);
+    } catch {}
+    showAreaMark(cx, cy);
+  }
+
+  function moveArea(cx: number, cy: number) {
+    if (!area) return;
+    if (area.phase === "armed") {
+      if (Math.hypot(cx - area.cx0, cy - area.cy0) <= AREA_START_MOVE_PX) return;
+      area.phase = "drawing";
+    }
+    const p = clampToPage(area.pageIndex, cx, cy);
+    if (!p) return;
+    const rect = {
+      x: Math.min(area.p0.x, p.x),
+      y: Math.min(area.p0.y, p.y),
+      width: Math.abs(p.x - area.p0.x),
+      height: Math.abs(p.y - area.p0.y),
+    };
+    area.rect = rect;
+    const c = pageRectToClient(area.pageIndex, rect);
+    if (c) showAreaRect(c);
+  }
+
+  /** The finger lifted after the hold: open the dialog for the drawn box, or for a default box at the point. */
+  function finishArea() {
+    const a = area;
+    cancelArea();
+    if (!a) return;
+    const zoom = pageFrame(a.pageIndex)?.zoom ?? 1;
+    const r = a.rect;
+    const drawn = a.phase === "drawing" && r && r.width * zoom >= AREA_MIN_PX && r.height * zoom >= AREA_MIN_PX;
+    void openTextStamp(a.cx0, a.cy0, drawn ? { area: { ...r, pageIndex: a.pageIndex } } : {});
+  }
+
   /**
    * Toggles fit-page / fit-width and scrolls to the page that was double-tapped, so fit-page shows that
    * whole page top-to-bottom and fit-width shows it left-to-right (starting at its top edge).
@@ -341,6 +477,7 @@ export function initTablet({
         panBlocked = false;
         multiTouch = false;
         holdFired = false;
+        cancelArea();
         cancelAnimationFrame(flingRaf);
       }
       touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -349,6 +486,7 @@ export function initTablet({
         multiTouch = true;
         pan = null;
         cancelHold();
+        cancelArea();
         return;
       }
       const double =
@@ -363,7 +501,7 @@ export function initTablet({
           holdTimer = null;
           holdFired = true;
           lastTap = null;
-          void openTextStamp(x, y);
+          armArea(x, y);
         }, DOUBLE_TAP_HOLD_MS);
       }
       const sc = scroller();
@@ -371,6 +509,11 @@ export function initTablet({
         pan = { scroller: sc, x: e.clientX, y: e.clientY, t: e.timeStamp, vx: 0, vy: 0 };
       }
     } else if (type === "pointermove") {
+      if (area) {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        moveArea(e.clientX, e.clientY);
+        return;
+      }
       if (holdTimer && touchDown && Math.hypot(e.clientX - touchDown.x, e.clientY - touchDown.y) > TAP_MAX_MOVE) {
         cancelHold();
       }
@@ -394,6 +537,10 @@ export function initTablet({
       touches.delete(e.pointerId);
       const wasPan = pan;
       pan = null;
+      if (area) {
+        if (type === "pointerup" && touches.size === 0) finishArea();
+        else cancelArea();
+      }
       if (touches.size > 0) return;
       if (wasPan && !panBlocked && type === "pointerup" && Math.hypot(wasPan.vx, wasPan.vy) > 0.15) {
         fling(wasPan.scroller, wasPan.vx, wasPan.vy);
@@ -505,8 +652,195 @@ export function initTablet({
 
   // ---------- text stamps ----------
   // A real Stamp annotation whose /Contents holds the source text, so the same gesture on it
-  // reopens the dialog prefilled and replaces it.
-  async function openTextStamp(clientX: number, clientY: number, { onlyExisting = false } = {}) {
+  // reopens the dialog prefilled and replaces it. The text is rendered to fill the stamp's rectangle.
+
+  /**
+   * The box a text stamp is being placed in, drawn on the page while the dialog is open: shows the fitted
+   * text live and can be moved / resized by touch ("Move / resize" in the dialog).
+   */
+  function createBoxPreview(pageIndex: number, initial: PageRect) {
+    let box: PageRect = { ...initial };
+    let text = "";
+    let drawTimer: ReturnType<typeof setTimeout> | null = null;
+    let raf = 0;
+    const el = document.createElement("div");
+    el.style.cssText =
+      "position:fixed;left:0;top:0;box-sizing:border-box;z-index:1000;pointer-events:none;touch-action:none;" +
+      "border:1.5px dashed #2563eb;background:rgba(255,255,255,0.35)";
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "width:100%;height:100%;display:block;pointer-events:none";
+    el.append(canvas);
+    document.body.append(el);
+
+    const place = () => {
+      const c = pageRectToClient(pageIndex, box);
+      el.style.display = c ? "block" : "none";
+      if (!c) return;
+      el.style.transform = `translate(${c.left}px, ${c.top}px)`;
+      el.style.width = `${c.width}px`;
+      el.style.height = `${c.height}px`;
+    };
+    const loop = () => {
+      place(); // follows scrolling and zooming
+      raf = requestAnimationFrame(loop);
+    };
+    loop();
+
+    const draw = () => {
+      drawTimer = null;
+      const ctx = canvas.getContext("2d")!;
+      if (!text.trim()) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+      const r = renderTextToCanvas(text, box);
+      canvas.width = r.canvas.width;
+      canvas.height = r.canvas.height;
+      canvas.getContext("2d")!.drawImage(r.canvas, 0, 0);
+    };
+    const redraw = () => {
+      if (drawTimer) clearTimeout(drawTimer);
+      drawTimer = setTimeout(draw, 80);
+    };
+
+    const extras: HTMLElement[] = [];
+    let editing: ((ok: boolean) => void) | null = null;
+
+    /** Drag the box / its corners until Done (true) or Cancel (false). */
+    function edit(): Promise<boolean> {
+      return new Promise((resolve) => {
+        const frame = pageFrame(pageIndex);
+        if (!frame) return resolve(false);
+        el.style.pointerEvents = "auto";
+        el.style.cursor = "move";
+        const corners = { nw: [0, 0], ne: [1, 0], sw: [0, 1], se: [1, 1] } as const;
+        for (const [name, [fx, fy]] of Object.entries(corners)) {
+          const h = document.createElement("div");
+          h.dataset.corner = name;
+          h.style.cssText =
+            `position:absolute;width:30px;height:30px;left:${fx * 100}%;top:${fy * 100}%;margin:-15px 0 0 -15px;` +
+            "border-radius:50%;background:#2563eb;border:3px solid #fff;box-sizing:border-box;touch-action:none;" +
+            `cursor:${name === "nw" || name === "se" ? "nwse-resize" : "nesw-resize"}`;
+          el.append(h);
+          extras.push(h);
+        }
+        const pills = document.createElement("div");
+        pills.style.cssText =
+          "position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:1001;display:flex;gap:10px";
+        const pill = (label: string, primary: boolean, ok: boolean) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.textContent = label;
+          b.style.cssText =
+            "min-height:44px;padding:0 20px;font:inherit;border-radius:22px;border:1px solid #8886;" +
+            (primary ? "background:#2563eb;color:#fff" : "background:#fff;color:#111");
+          b.addEventListener("click", () => finish(ok));
+          pills.append(b);
+        };
+        pill("Cancel", false, false);
+        pill("Done", true, true);
+        document.body.append(pills);
+        extras.push(pills);
+
+        let drag: { mode: string; cx: number; cy: number; box: PageRect } | null = null;
+        const onDown = (e: PointerEvent) => {
+          e.preventDefault();
+          const corner = (e.target as HTMLElement).dataset?.corner;
+          drag = { mode: corner ?? "move", cx: e.clientX, cy: e.clientY, box: { ...box } };
+          el.setPointerCapture(e.pointerId);
+        };
+        const onMove = (e: PointerEvent) => {
+          const f = pageFrame(pageIndex);
+          if (!drag || !f) return;
+          const dx = (e.clientX - drag.cx) / f.zoom;
+          const dy = (e.clientY - drag.cy) / f.zoom;
+          const o = drag.box;
+          const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+          if (drag.mode === "move") {
+            box = {
+              ...o,
+              x: clamp(o.x + dx, 0, Math.max(0, f.width - o.width)),
+              y: clamp(o.y + dy, 0, Math.max(0, f.height - o.height)),
+            };
+          } else {
+            let l = o.x;
+            let t = o.y;
+            let r = o.x + o.width;
+            let b = o.y + o.height;
+            if (drag.mode.includes("w")) l = clamp(l + dx, 0, r - MIN_BOX);
+            else r = clamp(r + dx, l + MIN_BOX, f.width);
+            if (drag.mode.includes("n")) t = clamp(t + dy, 0, b - MIN_BOX);
+            else b = clamp(b + dy, t + MIN_BOX, f.height);
+            box = { x: l, y: t, width: r - l, height: b - t };
+          }
+          place();
+          redraw();
+        };
+        const onUp = () => (drag = null);
+        const onKey = (e: KeyboardEvent) => {
+          if (e.key === "Escape") finish(false);
+          else if (e.key === "Enter") finish(true);
+        };
+        const finish = (ok: boolean) => {
+          editing = null;
+          el.removeEventListener("pointerdown", onDown);
+          el.removeEventListener("pointermove", onMove);
+          el.removeEventListener("pointerup", onUp);
+          el.removeEventListener("pointercancel", onUp);
+          window.removeEventListener("keydown", onKey, true);
+          el.style.pointerEvents = "none";
+          el.style.cursor = "";
+          for (const x of extras.splice(0)) x.remove();
+          resolve(ok);
+        };
+        editing = finish;
+        el.addEventListener("pointerdown", onDown);
+        el.addEventListener("pointermove", onMove);
+        el.addEventListener("pointerup", onUp);
+        el.addEventListener("pointercancel", onUp);
+        window.addEventListener("keydown", onKey, true);
+      });
+    }
+
+    return {
+      getBox: () => box,
+      clientRect: () => {
+        const c = pageRectToClient(pageIndex, box);
+        return new DOMRect(c?.left ?? 0, c?.top ?? 0, c?.width ?? 0, c?.height ?? 0);
+      },
+      setText(s: string) {
+        text = s;
+        redraw();
+      },
+      edit,
+      destroy() {
+        editing?.(false);
+        cancelAnimationFrame(raf);
+        if (drawTimer) clearTimeout(drawTimer);
+        for (const x of extras.splice(0)) x.remove();
+        el.remove();
+      },
+    };
+  }
+
+  /** Default box for a stamp placed at a point: centred on it, kept inside the page. */
+  function defaultBox(pageIndex: number, x: number, y: number): PageRect {
+    const f = pageFrame(pageIndex);
+    const w = Math.min(DEFAULT_BOX.width, f?.width ?? DEFAULT_BOX.width);
+    const h = Math.min(DEFAULT_BOX.height, f?.height ?? DEFAULT_BOX.height);
+    return {
+      x: Math.max(0, Math.min((f?.width ?? Infinity) - w, x - w / 2)),
+      y: Math.max(0, Math.min((f?.height ?? Infinity) - h, y - h / 2)),
+      width: w,
+      height: h,
+    };
+  }
+
+  async function openTextStamp(
+    clientX: number,
+    clientY: number,
+    { onlyExisting = false, area }: { onlyExisting?: boolean; area?: PageRect & { pageIndex: number } } = {},
+  ) {
     const a = annScope();
     const p = pointToPage(clientX, clientY);
     if (!a || !p) return;
@@ -524,13 +858,43 @@ export function initTablet({
       );
     if (onlyExisting && !existing) return;
     const initial: string = existing?.contents ?? "";
-    const text = await promptText(initial);
-    if (text === null || text === initial) return;
+    const startBox: PageRect = area
+      ? { x: area.x, y: area.y, width: area.width, height: area.height }
+      : existing
+        ? {
+            x: existing.rect.origin.x,
+            y: existing.rect.origin.y,
+            width: existing.rect.size.width,
+            height: existing.rect.size.height,
+          }
+        : defaultBox(p.pageIndex, p.x, p.y);
 
-    const { canvas, width, height } = renderTextToCanvas(text);
+    // Dialog <-> box editor loop: "Move / resize" hides the dialog, Done brings it back with the draft.
+    const preview = createBoxPreview(p.pageIndex, startBox);
+    let text: string | null = null;
+    try {
+      let draft = initial;
+      for (;;) {
+        preview.setText(draft);
+        const r = await promptTextEx(draft, { onInput: preview.setText, anchor: preview.clientRect() });
+        draft = r.draft;
+        if (r.move) {
+          if (!(await preview.edit())) return;
+          continue;
+        }
+        text = r.result;
+        break;
+      }
+    } finally {
+      preview.destroy();
+    }
+    const box = preview.getBox();
+    const sameBox =
+      box.x === startBox.x && box.y === startBox.y && box.width === startBox.width && box.height === startBox.height;
+    if (text === null || (text === initial && sameBox)) return;
+
+    const { canvas } = renderTextToCanvas(text, box);
     const imageData = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height);
-    const cx = existing ? existing.rect.origin.x + existing.rect.size.width / 2 : p.x;
-    const cy = existing ? existing.rect.origin.y + existing.rect.size.height / 2 : p.y;
     if (existing) a.deleteAnnotation(p.pageIndex, existing.id);
     a.createAnnotation(
       p.pageIndex,
@@ -538,7 +902,7 @@ export function initTablet({
         type: STAMP,
         id: `opm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`, // randomUUID needs https
         pageIndex: p.pageIndex,
-        rect: { origin: { x: cx - width / 2, y: cy - height / 2 }, size: { width, height } },
+        rect: { origin: { x: box.x, y: box.y }, size: { width: box.width, height: box.height } },
         contents: text,
       },
       { imageData },

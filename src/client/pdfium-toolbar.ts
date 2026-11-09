@@ -184,7 +184,7 @@ export function createToolbar(host: ToolbarHost): Toolbar {
       icon: "opmTablet",
       description:
         "Tablet mode: pen draws (barrel button erases), finger scrolls / pinch-zooms / double-tap toggles fit, " +
-        "double-tap + hold adds text, mouse never draws",
+        "double-tap + hold adds text (drag after the hold to draw its box), mouse never draws",
       action: () => host.tablet.toggleTablet(),
       active: () => host.tablet.isTablet(),
     });
