@@ -491,9 +491,17 @@ export function initTablet({
     },
     { capture: true },
   );
-  target.addEventListener("contextmenu", (e) => {
-    if (tablet) e.preventDefault();
-  });
+  // No browser context menu in tablet mode, nor for any touch long-press (one or two fingers). Registered on
+  // window in the capture phase so EmbedPDF's own handlers (which may stop propagation inside #viewer) and
+  // events that land outside #viewer (toolbar, gaps between pages) can't let the menu through.
+  window.addEventListener(
+    "contextmenu",
+    (e) => {
+      const touch = (e as PointerEvent).pointerType === "touch" || lastDownType === "touch";
+      if (tablet || touch) e.preventDefault();
+    },
+    { capture: true },
+  );
 
   // ---------- text stamps ----------
   // A real Stamp annotation whose /Contents holds the source text, so the same gesture on it
