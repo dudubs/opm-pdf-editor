@@ -1,8 +1,8 @@
 // Tablet mode for the PDFium (EmbedPDF) editor — same behaviour as the pdf.js editor's tablet mode:
 //   pen    draws ink; barrel button / eraser end erases the strokes it touches while held
 //   finger scrolls (one finger), pinch-zooms (EmbedPDF's own gesture), double-tap toggles fit-page /
-//          fit-width, double-tap + hold the second tap starts a text stamp: lift without moving for a default
-//          box at that point, or keep the finger down and drag to draw the box the text will fill
+//          fit-width, a long press starts a text stamp: lift without moving for text centred on that point at the
+//          default font size, or keep the finger down and drag to draw the box the text will fill
 //   mouse  never draws; it only interacts with existing annotations
 //
 // Text stamps (Hebrew-safe: text is rendered to an image, the source text stays in /Contents) are also
@@ -14,7 +14,7 @@
 // is done here. Pointer events are filtered in the capture phase on the viewer's host element, before
 // they reach the plugin's listeners inside the shadow DOM.
 
-import { promptTextEx, renderTextToCanvas } from "./textStamp";
+import { parseTextDir, promptTextEx, renderTextToCanvas, withTextFit } from "./textStamp";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -29,11 +29,11 @@ const TAP_MAX_MS = 350; // finger down -> up
 const TAP_MAX_MOVE = 20; // px
 const DOUBLE_TAP_MAX_GAP_MS = 500; // first tap up -> second tap down
 const DOUBLE_TAP_MAX_DIST = 60; // px
-const DOUBLE_TAP_HOLD_MS = 500;
+const LONG_PRESS_MS = 500; // finger held still this long -> text stamp
 const AREA_START_MOVE_PX = 10; // after the hold, moving this far starts the text box rectangle
-const AREA_MIN_PX = 24; // a drawn box smaller than this (on screen) counts as no box
+const AREA_MIN_PX = 40; // a drawn box smaller than this (on screen, both ways) counts as no box
 const MIN_BOX = 12; // page units, smallest box when resizing
-const DEFAULT_BOX = { width: 200, height: 60 }; // page units, a text stamp placed without drawing a box
+const EMPTY_TEXT_BOX = { width: 60, height: 28 }; // page units, preview box before anything is typed
 
 interface PageRect {
   x: number;
@@ -346,7 +346,7 @@ export function initTablet({
     flingRaf = requestAnimationFrame(step);
   }
 
-  // Double-tap -> toggle fit; double-tap, holding the second tap -> text stamp.
+  // Double-tap -> toggle fit; long press -> text stamp.
   let lastTap: { upT: number; x: number; y: number } | null = null;
   let touchDown: { t: number; x: number; y: number; double: boolean } | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -368,6 +368,8 @@ export function initTablet({
 
   function showAreaMark(cx: number, cy: number) {
     const r = 16;
+    areaEl.style.borderColor = "#2563eb";
+    areaEl.style.background = "rgba(37,99,235,0.12)";
     Object.assign(areaEl.style, {
       display: "block",
       borderRadius: "50%",
@@ -424,7 +426,13 @@ export function initTablet({
     };
     area.rect = rect;
     const c = pageRectToClient(area.pageIndex, rect);
-    if (c) showAreaRect(c);
+    if (c) {
+      showAreaRect(c);
+      // A box below the minimum is only a point stamp: grey until it is big enough.
+      const big = c.width >= AREA_MIN_PX && c.height >= AREA_MIN_PX;
+      areaEl.style.borderColor = big ? "#2563eb" : "#9ca3af";
+      areaEl.style.background = big ? "rgba(37,99,235,0.12)" : "rgba(156,163,175,0.12)";
+    }
   }
 
   /** The finger lifted after the hold: open the dialog for the drawn box, or for a default box at the point. */
@@ -495,14 +503,14 @@ export function initTablet({
         Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < DOUBLE_TAP_MAX_DIST;
       touchDown = { t: e.timeStamp, x: e.clientX, y: e.clientY, double };
       cancelHold();
-      if (double) {
+      {
         const { clientX: x, clientY: y } = e;
         holdTimer = setTimeout(() => {
           holdTimer = null;
           holdFired = true;
           lastTap = null;
           armArea(x, y);
-        }, DOUBLE_TAP_HOLD_MS);
+        }, LONG_PRESS_MS);
       }
       const sc = scroller();
       if (sc && activeToolId() === "ink") {
@@ -629,7 +637,7 @@ export function initTablet({
   for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
     target.addEventListener(type, (e) => onPointer(e as PointerEvent), { capture: true });
   }
-  // Double-click an existing text stamp to edit it (mouse; touch uses double-tap + hold).
+  // Double-click an existing text stamp to edit it (mouse; touch uses a long press).
   target.addEventListener(
     "dblclick",
     (e) => {
@@ -655,11 +663,15 @@ export function initTablet({
   // reopens the dialog prefilled and replaces it. The text is rendered to fill the stamp's rectangle.
 
   /**
-   * The box a text stamp is being placed in, drawn on the page while the dialog is open: shows the fitted
-   * text live and can be moved / resized by touch ("Move / resize" in the dialog).
+   * The box a text stamp is being placed in, drawn on the page while the dialog is open. Two modes:
+   *  - auto: the box is the text at the default font size, centred on a fixed point (a plain long press)
+   *  - fixed: the box is an area the user defined; the text is fitted to fill it (drawn / moved / resized)
+   * "Move / resize" in the dialog switches to fixed, starting from the current box.
    */
-  function createBoxPreview(pageIndex: number, initial: PageRect) {
-    let box: PageRect = { ...initial };
+  function createBoxPreview(pageIndex: number, start: { box: PageRect } | { center: { x: number; y: number } }) {
+    let fixed = "box" in start;
+    let box: PageRect = "box" in start ? { ...start.box } : { x: 0, y: 0, ...EMPTY_TEXT_BOX };
+    const center = "center" in start ? start.center : { x: 0, y: 0 };
     let text = "";
     let drawTimer: ReturnType<typeof setTimeout> | null = null;
     let raf = 0;
@@ -671,6 +683,26 @@ export function initTablet({
     canvas.style.cssText = "width:100%;height:100%;display:block;pointer-events:none";
     el.append(canvas);
     document.body.append(el);
+
+    /** A w x h box centred on the point, kept inside the page. */
+    const centered = (w: number, h: number): PageRect => {
+      const f = pageFrame(pageIndex);
+      const pw = f?.width ?? Infinity;
+      const ph = f?.height ?? Infinity;
+      return {
+        x: Math.max(0, Math.min(pw - w, center.x - w / 2)),
+        y: Math.max(0, Math.min(ph - h, center.y - h / 2)),
+        width: w,
+        height: h,
+      };
+    };
+    /** The box the text takes at the default font size. */
+    const naturalBox = (stored: string): PageRect => {
+      if (!stored.trim()) return centered(EMPTY_TEXT_BOX.width, EMPTY_TEXT_BOX.height);
+      const r = renderTextToCanvas(stored);
+      return centered(r.width, r.height);
+    };
+    if (!fixed) box = naturalBox("");
 
     const place = () => {
       const c = pageRectToClient(pageIndex, box);
@@ -688,12 +720,13 @@ export function initTablet({
 
     const draw = () => {
       drawTimer = null;
+      if (!fixed) box = naturalBox(text);
       const ctx = canvas.getContext("2d")!;
       if (!text.trim()) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         return;
       }
-      const r = renderTextToCanvas(text, box);
+      const r = renderTextToCanvas(text, fixed ? box : undefined);
       canvas.width = r.canvas.width;
       canvas.height = r.canvas.height;
       canvas.getContext("2d")!.drawImage(r.canvas, 0, 0);
@@ -706,11 +739,15 @@ export function initTablet({
     const extras: HTMLElement[] = [];
     let editing: ((ok: boolean) => void) | null = null;
 
-    /** Drag the box / its corners until Done (true) or Cancel (false). */
+    /** Drag the box / its corners until Done (true) or Cancel (false). The box becomes a fixed area. */
     function edit(): Promise<boolean> {
       return new Promise((resolve) => {
         const frame = pageFrame(pageIndex);
         if (!frame) return resolve(false);
+        if (!fixed) {
+          box = naturalBox(text);
+          fixed = true;
+        }
         el.style.pointerEvents = "auto";
         el.style.cursor = "move";
         const corners = { nw: [0, 0], ne: [1, 0], sw: [0, 1], se: [1, 1] } as const;
@@ -803,7 +840,9 @@ export function initTablet({
     }
 
     return {
-      getBox: () => box,
+      isFixed: () => fixed,
+      /** The box the stamp will get for this text (auto: the text's own size around the point). */
+      getBox: (stored: string) => (fixed ? box : naturalBox(stored)),
       clientRect: () => {
         const c = pageRectToClient(pageIndex, box);
         return new DOMRect(c?.left ?? 0, c?.top ?? 0, c?.width ?? 0, c?.height ?? 0);
@@ -820,19 +859,6 @@ export function initTablet({
         for (const x of extras.splice(0)) x.remove();
         el.remove();
       },
-    };
-  }
-
-  /** Default box for a stamp placed at a point: centred on it, kept inside the page. */
-  function defaultBox(pageIndex: number, x: number, y: number): PageRect {
-    const f = pageFrame(pageIndex);
-    const w = Math.min(DEFAULT_BOX.width, f?.width ?? DEFAULT_BOX.width);
-    const h = Math.min(DEFAULT_BOX.height, f?.height ?? DEFAULT_BOX.height);
-    return {
-      x: Math.max(0, Math.min((f?.width ?? Infinity) - w, x - w / 2)),
-      y: Math.max(0, Math.min((f?.height ?? Infinity) - h, y - h / 2)),
-      width: w,
-      height: h,
     };
   }
 
@@ -858,20 +884,30 @@ export function initTablet({
       );
     if (onlyExisting && !existing) return;
     const initial: string = existing?.contents ?? "";
-    const startBox: PageRect = area
+    const existingRect: PageRect | null = existing
+      ? {
+          x: existing.rect.origin.x,
+          y: existing.rect.origin.y,
+          width: existing.rect.size.width,
+          height: existing.rect.size.height,
+        }
+      : null;
+    // A drawn area, or an existing stamp that was fitted to one, is a fixed box; anything else is text at the
+    // default font size, centred on the pressed point (or on the old stamp's centre).
+    const startBox: PageRect | null = area
       ? { x: area.x, y: area.y, width: area.width, height: area.height }
-      : existing
-        ? {
-            x: existing.rect.origin.x,
-            y: existing.rect.origin.y,
-            width: existing.rect.size.width,
-            height: existing.rect.size.height,
-          }
-        : defaultBox(p.pageIndex, p.x, p.y);
+      : existingRect && parseTextDir(initial).fit
+        ? existingRect
+        : null;
+    const center = existingRect
+      ? { x: existingRect.x + existingRect.width / 2, y: existingRect.y + existingRect.height / 2 }
+      : { x: p.x, y: p.y };
 
     // Dialog <-> box editor loop: "Move / resize" hides the dialog, Done brings it back with the draft.
-    const preview = createBoxPreview(p.pageIndex, startBox);
+    const preview = createBoxPreview(p.pageIndex, startBox ? { box: startBox } : { center });
     let text: string | null = null;
+    let box: PageRect;
+    let fixed: boolean;
     try {
       let draft = initial;
       for (;;) {
@@ -885,15 +921,26 @@ export function initTablet({
         text = r.result;
         break;
       }
+      fixed = preview.isFixed();
+      box = text === null ? { x: 0, y: 0, width: 0, height: 0 } : preview.getBox(text);
     } finally {
       preview.destroy();
     }
-    const box = preview.getBox();
-    const sameBox =
-      box.x === startBox.x && box.y === startBox.y && box.width === startBox.width && box.height === startBox.height;
-    if (text === null || (text === initial && sameBox)) return;
+    if (text === null) return;
+    const strip = (stored: string) => withTextFit(stored, false);
+    const unchanged =
+      strip(text) === strip(initial) &&
+      fixed === !!startBox &&
+      (!fixed ||
+        (startBox !== null &&
+          box.x === startBox.x &&
+          box.y === startBox.y &&
+          box.width === startBox.width &&
+          box.height === startBox.height));
+    if (unchanged) return;
 
-    const { canvas } = renderTextToCanvas(text, box);
+    const stored = withTextFit(text, fixed);
+    const { canvas } = renderTextToCanvas(stored, fixed ? box : undefined);
     const imageData = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height);
     if (existing) a.deleteAnnotation(p.pageIndex, existing.id);
     a.createAnnotation(
@@ -903,7 +950,7 @@ export function initTablet({
         id: `opm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`, // randomUUID needs https
         pageIndex: p.pageIndex,
         rect: { origin: { x: box.x, y: box.y }, size: { width: box.width, height: box.height } },
-        contents: text,
+        contents: stored,
       },
       { imageData },
     );

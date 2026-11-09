@@ -23,15 +23,34 @@ const RLM = "‏";
 const LRM = "‎";
 export type TextDir = "auto" | "rtl" | "ltr";
 
-/** Splits the leading direction mark off the stored text. */
-export function parseTextDir(stored: string): { text: string; dir: TextDir } {
-  if (stored.startsWith(RLM)) return { text: stored.slice(1), dir: "rtl" };
-  if (stored.startsWith(LRM)) return { text: stored.slice(1), dir: "ltr" };
-  return { text: stored, dir: "auto" };
+// A stamp whose text was fitted to a box the user defined (drawn or moved / resized) carries a second invisible
+// mark after the direction mark, U+2060, so re-editing it refits the new text to the same box. Stamps without it
+// were sized to their text.
+const FIT = "\u2060";
+
+/** Splits the leading direction / fit marks off the stored text. */
+export function parseTextDir(stored: string): { text: string; dir: TextDir; fit: boolean } {
+  let rest = stored;
+  let dir: TextDir = "auto";
+  if (rest.startsWith(RLM)) {
+    dir = "rtl";
+    rest = rest.slice(1);
+  } else if (rest.startsWith(LRM)) {
+    dir = "ltr";
+    rest = rest.slice(1);
+  }
+  const fit = rest.startsWith(FIT);
+  return { text: fit ? rest.slice(1) : rest, dir, fit };
 }
 
 export function withTextDir(text: string, dir: TextDir): string {
   return (dir === "rtl" ? RLM : dir === "ltr" ? LRM : "") + text;
+}
+
+/** The stored text with its fit mark set or cleared (direction mark kept). */
+export function withTextFit(stored: string, fit: boolean): string {
+  const { text, dir } = parseTextDir(stored);
+  return withTextDir((fit ? FIT : "") + text, dir);
 }
 
 const RTL_CHAR = /[֐-ࣿיִ-﷿ﹰ-﻿]/;
