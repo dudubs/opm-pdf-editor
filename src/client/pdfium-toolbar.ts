@@ -286,6 +286,8 @@ export function createToolbar(host: ToolbarHost): Toolbar {
         btn("opm-m-highlight", "annotation:add-highlight"),
         btn("opm-text", "opm:text"),
         btn("opm-m-delete", "annotation:delete-selected"),
+        // Colour / width / opacity of the active tool (or the selection); these choices are remembered.
+        btn("opm-m-style", "annotation:toggle-annotation-style"),
       ]),
       divider("opm-m-d3"),
       group("opm-m-history", [btn("opm-m-undo", "history:undo"), btn("opm-m-redo", "history:redo")]),

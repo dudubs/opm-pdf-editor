@@ -11,6 +11,7 @@ import EmbedPDF from "/embedpdf/embedpdf.js";
 import { viewerConfig } from "./pdfium-config";
 import { initTablet } from "./pdfium-tablet";
 import { createToolbar, toolbarIcons } from "./pdfium-toolbar";
+import { attachPrefs } from "./pdfium-prefs";
 import { storage } from "./storage";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -112,6 +113,7 @@ async function mount(id: string, bytes: Uint8Array) {
   if (!desktop) history.replaceState(null, "", `?file=${encodeURIComponent(id)}`);
   const { registry } = await toolbar!.setup(v);
   if (viewer !== v) return;
+  attachPrefs(registry, { isTablet: () => tablet.isTablet() });
   // EmbedPDF may transfer the buffer to its worker, so give it its own copy. Load errors (e.g. a
   // password prompt) are EmbedPDF's own UI to show, so the task is not awaited.
   registry.getPlugin("document-manager").provides().openDocumentBuffer({
